@@ -3,7 +3,7 @@
  *   USART1  →  YRM100 RFID        (PA9 TX, PA10 RX)
  *   USART2  →  Debug via ST-Link VCOM  (PA2 TX, PA3 RX)
  *   USART6  →  ESP32 bridge        (PC6 TX, PC7 RX)
- *   SPI1    →  ST7735 1.8" TFT    (PA5 SCK, PA7 MOSI, PB0 DC, PB1 RST, PB2 CS)
+ *   SPI1    →  ST7735 1.8" TFT    (PA5 SCK, PB5 MOSI, PB0 DC, PB1 RST, PB2 CS)
  *   GPIO    →  READY pin (PA8, input from ESP32)
  */
 
@@ -47,12 +47,16 @@ typedef struct {
 #define SYSTICK ((SYSTICK_t *)0xE000E010)
 
 /* Bit defines */
-#define USART_SR_TXE  (1 << 7)
-#define USART_SR_TC   (1 << 6)
-#define USART_SR_RXNE (1 << 5)
-#define USART_CR1_UE  (1 << 13)
-#define USART_CR1_TE  (1 << 3)
-#define USART_CR1_RE  (1 << 2)
+#define USART_SR_TXE     (1 << 7)
+#define USART_SR_TC      (1 << 6)
+#define USART_SR_RXNE    (1 << 5)
+#define USART_CR1_UE     (1 << 13)
+#define USART_CR1_RXNEIE (1 << 5)
+#define USART_CR1_TE     (1 << 3)
+#define USART_CR1_RE     (1 << 2)
+
+/* NVIC — USART1 IRQn = 37, so ISER1 bit 5 */
+#define NVIC_ISER1 (*(volatile uint32_t *)0xE000E104)
 
 /* ── Config ──────────────────────────────────────────────────────── */
 #define HSI_FREQ         16000000UL
@@ -157,12 +161,41 @@ static void dbg_print_u8(uint8_t v) {
     dbg_putc('0' + v % 10);
 }
 
-/* ── USART1 callbacks for YRM100 ────────────────────────────────── */
+/* ── USART1 callbacks for YRM100 ──────────────────────────────────
+ * RX is interrupt-driven through a ring buffer so bytes aren't dropped while
+ * the main loop is busy (display refresh, dbg prints, ESP32 uplink). Without
+ * this, back-to-back YRM100 inventory notices desync the parser after ~12
+ * tags and polling collapses. TX stays polled — we never send while the main
+ * loop is doing something else. */
+
+#define RX_BUF_SIZE 1024
+#define RX_BUF_MASK (RX_BUF_SIZE - 1)
+static volatile uint8_t  rx_buf[RX_BUF_SIZE];
+static volatile uint16_t rx_head;
+static volatile uint16_t rx_tail;
+static volatile uint16_t rx_dropped;   /* incremented on buffer-full or USART OVR */
+
+void USART1_IRQHandler(void) {
+    uint32_t sr = USART1->SR;
+    if (sr & USART_SR_RXNE) {
+        uint8_t b = (uint8_t)USART1->DR;   /* reading DR clears RXNE (and OVR if set) */
+        uint16_t next = (uint16_t)((rx_head + 1) & RX_BUF_MASK);
+        if (next != rx_tail) {
+            rx_buf[rx_head] = b;
+            rx_head = next;
+        } else {
+            rx_dropped++;
+        }
+    }
+}
 
 static void yrm_uart_init(uint32_t baud) {
     (void)baud;
+    rx_head = rx_tail = 0;
+    rx_dropped = 0;
     USART1->BRR = USARTDIV_115200;
-    USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+    USART1->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
+    NVIC_ISER1  = (1u << 5);          /* enable USART1 IRQ (37) */
 }
 
 static void yrm_uart_send(const uint8_t *data, uint16_t len) {
@@ -176,13 +209,17 @@ static void yrm_uart_send(const uint8_t *data, uint16_t len) {
 static uint8_t yrm_uart_recv_byte(uint16_t timeout_ms) {
     uint32_t start = millis();
     while ((millis() - start) < timeout_ms) {
-        if (USART1->SR & USART_SR_RXNE) return (uint8_t)USART1->DR;
+        if (rx_head != rx_tail) {
+            uint8_t b = rx_buf[rx_tail];
+            rx_tail = (uint16_t)((rx_tail + 1) & RX_BUF_MASK);
+            return b;
+        }
     }
     return 0;
 }
 
 static uint8_t yrm_uart_data_available(void) {
-    return (USART1->SR & USART_SR_RXNE) ? 1 : 0;
+    return (rx_head != rx_tail) ? 1 : 0;
 }
 
 /* ── USART6 (to ESP32) ──────────────────────────────────────────── */
@@ -332,8 +369,20 @@ int main(void) {
     dbg_puts("\r\n=== Whear STM32 RFID Scanner ===\r\n");
     dbg_puts("Waiting for ESP32 READY...\r\n");
 
-    while (!esp_ready()) delay_ms(100);
-    dbg_puts("ESP32 ready\r\n");
+    /* Wait up to 5s for the ESP32 to signal Wi-Fi ready. If it never does,
+     * still bring up the RFID path — the send-to-ESP call is already gated
+     * on esp_ready() in the main loop, so we degrade gracefully. */
+    {
+        uint32_t t0 = millis();
+        while (!esp_ready() && (millis() - t0) < 5000) delay_ms(100);
+    }
+    if (esp_ready()) {
+        dbg_puts("ESP32 ready\r\n");
+    } else {
+        dbg_puts("ESP32 not ready — proceeding without uplink\r\n");
+        LCD_drawBlock(0, 20, LCD_WIDTH - 1, 27, BLACK);
+        LCD_drawString(4, 20, "no ESP32, scan only", YELLOW, BLACK);
+    }
 
     /* YRM100 setup */
     yrm100_t rfid;
@@ -347,14 +396,15 @@ int main(void) {
     delay_ms(500);
 
     /* Raw RX diagnostic: 2s window, dump any byte that arrives on USART1.
-       This tells us if PA10 is wired correctly before we run any protocol. */
+       Bytes are drained into rx_buf by the ISR — we read from there. */
     dbg_puts("[diag] raw RX window (2s)...\r\n");
     {
         uint32_t t0 = millis();
         uint32_t got = 0;
         while ((millis() - t0) < 2000) {
-            if (USART1->SR & USART_SR_RXNE) {
-                uint8_t b = (uint8_t)USART1->DR;
+            if (rx_head != rx_tail) {
+                uint8_t b = rx_buf[rx_tail];
+                rx_tail = (uint16_t)((rx_tail + 1) & RX_BUF_MASK);
                 dbg_print_hex(b);
                 dbg_putc(' ');
                 got++;
@@ -394,11 +444,13 @@ int main(void) {
         }
 
         if ((millis() - last_send) >= SCAN_INTERVAL_MS) {
-            dbg_puts("[poll] ok=");  dbg_print_u8(poll_ok > 255 ? 255 : poll_ok);
-            dbg_puts(" to=");        dbg_print_u8(poll_timeout > 255 ? 255 : poll_timeout);
-            dbg_puts(" err=");       dbg_print_u8(poll_err > 255 ? 255 : poll_err);
+            dbg_puts("[poll] ok=");   dbg_print_u8(poll_ok > 255 ? 255 : poll_ok);
+            dbg_puts(" to=");         dbg_print_u8(poll_timeout > 255 ? 255 : poll_timeout);
+            dbg_puts(" err=");        dbg_print_u8(poll_err > 255 ? 255 : poll_err);
+            dbg_puts(" rxdrop=");     dbg_print_u8(rx_dropped > 255 ? 255 : rx_dropped);
             dbg_puts("\r\n");
             poll_ok = poll_timeout = poll_err = 0;
+            rx_dropped = 0;
 
             /* Drop tags that haven't been re-scanned recently */
             prune_stale_tags();

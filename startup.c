@@ -8,6 +8,7 @@ extern uint32_t _sbss, _ebss;
 
 int main(void);
 void SysTick_Handler(void);
+void USART1_IRQHandler(void);
 
 void Default_Handler(void) {
     while (1);
@@ -30,7 +31,10 @@ void Reset_Handler(void) {
     while (1);
 }
 
-/* Vector table placed at start of flash by the linker script */
+/* Vector table placed at start of flash by the linker script.
+ * Positions 16..N are external interrupts (IRQn). We care about:
+ *   IRQn 37 = USART1 → vector slot 16 + 37 = 53
+ * Unspecified slots in the designated-initializer range fall to Default_Handler. */
 __attribute__((section(".isr_vector"), used))
 void (* const vector_table[])(void) = {
     (void (*)(void))&_estack,   /*  0 Initial stack pointer */
@@ -46,4 +50,6 @@ void (* const vector_table[])(void) = {
     0,                          /* 13 Reserved */
     Default_Handler,            /* 14 PendSV */
     SysTick_Handler,            /* 15 SysTick */
+    [16 ... 52] = Default_Handler,
+    [53] = USART1_IRQHandler,   /* 16 + IRQn 37 */
 };

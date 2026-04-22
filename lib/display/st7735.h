@@ -4,7 +4,7 @@
  * code can call it unchanged. Hardware layer drives SPI1 + three GPIOs.
  *
  *   SCK  = PA5  (SPI1_SCK,  AF5)
- *   MOSI = PA7  (SPI1_MOSI, AF5)
+ *   MOSI = PB5  (SPI1_MOSI, AF5)
  *   DC   = PB0
  *   RST  = PB1
  *   CS   = PB2

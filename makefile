@@ -5,7 +5,10 @@ ARM_CC      = arm-none-eabi-gcc
 ARM_OBJCOPY = arm-none-eabi-objcopy
 ARM_SIZE    = arm-none-eabi-size
 OPENOCD     = openocd
-PIO         = ~/.platformio/penv/bin/pio
+PIO         = pio
+
+# Windows: point STM32_PROGRAMMER at the CubeIDE-bundled CLI if it's not on PATH
+STM32_PROGRAMMER ?= STM32_Programmer_CLI
 
 # ── STM32F411RE build flags ──────────────────────────────────────
 MCPU_FLAGS  = -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
@@ -30,8 +33,7 @@ main.bin: main.elf
 	$(ARM_OBJCOPY) -O binary $< $@
 
 flash-main: main.bin
-	$(OPENOCD) -f interface/stlink.cfg -f target/stm32f4x.cfg \
-	           -c "program $< 0x08000000 verify reset exit"
+	$(STM32_PROGRAMMER) -c port=SWD -w $< 0x08000000 -v -hardRst
 
 monitor-main:
 	@echo "Opening ST-Link VCOM at 115200 (Ctrl-A, k, y to exit)"
