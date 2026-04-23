@@ -3,8 +3,9 @@
  *   USART1  →  YRM100 RFID        (PA9 TX, PA10 RX)
  *   USART2  →  Debug via ST-Link VCOM  (PA2 TX, PA3 RX)
  *   USART6  →  ESP32 bridge        (PC6 TX, PC7 RX)
- *   SPI1    →  ST7735 1.8" TFT    (PA5 SCK, PB5 MOSI, PB0 DC, PB1 RST, PB2 CS)
+ *   SPI1    →  ST7735 1.8" TFT    (PA5 SCK, PA7 MOSI, PB6 DC, PB15 RST, PB5 CS)
  *   GPIO    →  READY pin (PA8, input from ESP32)
+ *   GPIO    →  NeoPixel ring DIN (PB4, 12 LEDs, 800 kHz one-wire)
  */
 
 #include <stdint.h>
@@ -12,6 +13,7 @@
 #include "lib/yrm100/yrm100.h"
 #include "lib/display/st7735.h"
 #include "lib/display/lcd_gfx.h"
+#include "lib/neopixel/neopixel.h"
 
 /* ── Minimal STM32F411RE register map ────────────────────────────── */
 
@@ -59,9 +61,12 @@ typedef struct {
 #define NVIC_ISER1 (*(volatile uint32_t *)0xE000E104)
 
 /* ── Config ──────────────────────────────────────────────────────── */
-#define HSI_FREQ         16000000UL
-#define SCAN_INTERVAL_MS 5000       /* Firestore update cadence */
-#define TAG_TTL_MS       10000      /* drop a tag if not re-seen within this */
+#define HSI_FREQ            16000000UL
+#define DISPLAY_INTERVAL_MS 200    /* TFT refresh + TTL prune cadence */
+#define UPLINK_INTERVAL_MS  300    /* ESP32 / Firestore uplink + stats */
+#define TAG_TTL_MS          2000   /* drop a tag if not re-seen within this —
+                                      tighter = faster removal, but risks
+                                      flicker on tags at the edge of range */
 #define MAX_TAGS         20
 #define UART_BAUD        115200
 #define USARTDIV_115200  0x008B   /* 16MHz / (16 * 115200) ≈ 8.68 → Mant=8, Frac=11 */
@@ -306,35 +311,142 @@ static char *u8_to_str(uint8_t v, char *p) {
     return p;
 }
 
-static char *byte_to_hex(uint8_t b, char *p) {
-    static const char hex[] = "0123456789ABCDEF";
-    *p++ = hex[b >> 4];
-    *p++ = hex[b & 0x0F];
-    return p;
+/* Screen layout (160x128, landscape):
+ *   y=4   "Whear" title, scale 2, centered (5 chars × 12 = 60, x=50)
+ *   y=28  WiFi status, scale 1, centered
+ *   y=50  big tag count, scale 5, centered
+ *   y=94  "pieces detected" label, scale 1, centered (15 chars × 6 = 90, x=35) */
+static void display_update(uint8_t tag_count, uint8_t connected) {
+    /* Title */
+    LCD_drawBlock(0, 0, LCD_WIDTH - 1, 19, BLACK);
+    LCD_drawStringScaled(50, 4, "Whear", CYAN, BLACK, 2);
+
+    /* ESP32 status. Post-init, READY is driven low by the ESP32 only during
+     * Firestore uploads, so reflecting that as "Updating Cloud" is accurate
+     * for the common case. */
+    LCD_drawBlock(0, 24, LCD_WIDTH - 1, 35, BLACK);
+    if (connected) {
+        /* "WiFi Connected" — 14×6 = 84, x = 38 */
+        LCD_drawString(38, 28, "WiFi Connected", GREEN, BLACK);
+    } else {
+        /* "Updating Cloud" — 14×6 = 84, x = 38 */
+        LCD_drawString(38, 28, "Updating Cloud", YELLOW, BLACK);
+    }
+
+    /* Big count + small label */
+    LCD_drawBlock(0, 44, LCD_WIDTH - 1, LCD_HEIGHT - 1, BLACK);
+
+    char buf[4];
+    char *p = u8_to_str(tag_count, buf);
+    *p = '\0';
+    uint8_t digits = (uint8_t)(p - buf);
+
+    const uint8_t num_scale = 5;
+    /* digits × 6 × scale gives width including trailing spacing; subtract
+     * one scale's worth so the glyphs sit centered, not the column after. */
+    uint8_t num_w = (uint8_t)(digits * 6 * num_scale - num_scale);
+    uint8_t num_x = (uint8_t)((LCD_WIDTH - num_w) / 2);
+    uint8_t num_y = 50;
+    LCD_drawStringScaled(num_x, num_y, buf, WHITE, BLACK, num_scale);
+
+    uint8_t label_y = (uint8_t)(num_y + 8 * num_scale + 4);
+    LCD_drawString(35, label_y, "pieces detected", WHITE, BLACK);
 }
 
-static void display_update(uint8_t tag_count, const yrm100_tag_t *last_tag) {
-    char line[32];
-    char *p;
+/* ── NeoPixel ring animations ─────────────────────────────────────
+ * The ring is in four states:
+ *   1. Amber spinner  — during ESP wait + 10s warmup (non-blocking tick)
+ *   2. Solid white 20% — steady "ready" indicator
+ *   3. Green pulse    — blink when a new tag joins the set
+ *   4. Red pulse      — blink when a tag falls out of the set (TTL)
+ * The pulses are blocking (~400 ms each) but the USART1 RX ISR keeps
+ * filling rx_buf the whole time, so no RFID bytes are dropped. */
 
-    LCD_drawBlock(0, 0, LCD_WIDTH - 1, 47, BLACK);
+static void ring_solid(neopixel_t *np, uint32_t color, uint8_t brightness) {
+    neopixel_set_brightness(np, brightness);
+    neopixel_fill(np, color);
+    neopixel_show(np);
+}
 
-    LCD_drawString(4, 4, "Whear RFID", CYAN, BLACK);
+static void ring_off(neopixel_t *np) {
+    neopixel_set_brightness(np, 255);
+    neopixel_clear(np);
+    neopixel_show(np);
+}
 
-    p = line;
-    const char *prefix = "Tags: ";
-    while (*prefix) *p++ = *prefix++;
-    p = u8_to_str(tag_count, p);
-    *p = '\0';
-    LCD_drawString(4, 20, line, WHITE, BLACK);
+static void ring_spinner_tick(neopixel_t *np, uint32_t color, uint32_t now_ms) {
+    /* Head LED at full 50%, four trailing LEDs ramping down: 1/2, 1/4, 1/8,
+     * 1/16 of head intensity. The longer tail makes rotation direction and
+     * speed obvious even at the 100 ms step rate. */
+    static const uint8_t trail_shifts[4] = { 1, 2, 3, 4 };
+    neopixel_set_brightness(np, 128);
+    uint8_t pos = (uint8_t)((now_ms / 100) % NEOPIXEL_NUM_LEDS);
+    uint8_t r = (uint8_t)(color >> 16);
+    uint8_t g = (uint8_t)(color >> 8);
+    uint8_t b = (uint8_t)(color);
 
-    if (last_tag && last_tag->epc_len > 0) {
-        p = line;
-        uint8_t show = last_tag->epc_len > 6 ? 6 : last_tag->epc_len;
-        for (uint8_t i = 0; i < show; i++) p = byte_to_hex(last_tag->epc[i], p);
-        *p = '\0';
-        LCD_drawString(4, 36, line, YELLOW, BLACK);
+    for (uint16_t i = 0; i < NEOPIXEL_NUM_LEDS; i++) {
+        neopixel_set_pixel_rgb(np, i, 0, 0, 0);
     }
+    neopixel_set_pixel_rgb(np, pos, r, g, b);
+    for (uint8_t k = 0; k < 4; k++) {
+        uint8_t idx = (uint8_t)((pos + NEOPIXEL_NUM_LEDS - 1 - k) % NEOPIXEL_NUM_LEDS);
+        uint8_t sh  = trail_shifts[k];
+        neopixel_set_pixel_rgb(np, idx, (uint8_t)(r >> sh),
+                                        (uint8_t)(g >> sh),
+                                        (uint8_t)(b >> sh));
+    }
+    neopixel_show(np);
+}
+
+/* Non-blocking pulse: ring_pulse_start() stashes the request and returns
+ * immediately; ring_pulse_tick() advances the animation each pass of the
+ * main loop. This keeps the YRM100 poll and the ESP uplink from stalling
+ * for the pulse's full duration. */
+typedef struct {
+    uint32_t color;
+    uint32_t start_ms;
+    uint32_t last_frame_ms;
+    uint16_t duration_ms;
+    uint8_t  active;
+} ring_pulse_state_t;
+
+static ring_pulse_state_t ring_pulse_state;
+
+#define RING_PULSE_FRAME_MS 15    /* ≤100 Hz update cap; each show() briefly
+                                     disables IRQs, so don't churn every tick */
+
+static void ring_pulse_start(uint32_t color, uint16_t duration_ms) {
+    ring_pulse_state.color         = color;
+    ring_pulse_state.start_ms      = millis();
+    ring_pulse_state.last_frame_ms = 0;
+    ring_pulse_state.duration_ms   = duration_ms;
+    ring_pulse_state.active        = 1;
+}
+
+static void ring_pulse_tick(neopixel_t *np) {
+    if (!ring_pulse_state.active) return;
+
+    uint32_t now     = millis();
+    uint32_t elapsed = now - ring_pulse_state.start_ms;
+
+    if (elapsed >= ring_pulse_state.duration_ms) {
+        ring_off(np);
+        ring_pulse_state.active = 0;
+        return;
+    }
+
+    if ((now - ring_pulse_state.last_frame_ms) < RING_PULSE_FRAME_MS) return;
+    ring_pulse_state.last_frame_ms = now;
+
+    uint32_t half = ring_pulse_state.duration_ms / 2;
+    uint32_t up   = (elapsed < half) ? elapsed
+                                     : (ring_pulse_state.duration_ms - elapsed);
+    uint8_t br = (uint8_t)((up * 255) / half);
+
+    neopixel_set_brightness(np, br);
+    neopixel_fill(np, ring_pulse_state.color);
+    neopixel_show(np);
 }
 
 static void print_tag(const yrm100_tag_t *tag) {
@@ -361,10 +473,15 @@ int main(void) {
     usart2_init();
     esp_uart_init();
 
+    neopixel_t ring;
+    neopixel_init(&ring, (neopixel_gpio_t *)GPIOB, 4);
+    ring_spinner_tick(&ring, NEOPIXEL_COLOR(255, 100, 0), millis());
+
     lcd_init();
     LCD_setScreen(BLACK);
-    LCD_drawString(4, 4,  "Whear RFID", CYAN, BLACK);
-    LCD_drawString(4, 20, "booting...",  WHITE, BLACK);
+    LCD_drawStringScaled(50, 4, "Whear", CYAN, BLACK, 2);
+    /* "booting..." — 10×6 = 60, x = 50 */
+    LCD_drawString(50, 28, "booting...", WHITE, BLACK);
 
     dbg_puts("\r\n=== Whear STM32 RFID Scanner ===\r\n");
     dbg_puts("Waiting for ESP32 READY...\r\n");
@@ -374,15 +491,28 @@ int main(void) {
      * on esp_ready() in the main loop, so we degrade gracefully. */
     {
         uint32_t t0 = millis();
-        while (!esp_ready() && (millis() - t0) < 5000) delay_ms(100);
+        while (!esp_ready() && (millis() - t0) < 5000) {
+            ring_spinner_tick(&ring, NEOPIXEL_COLOR(255, 100, 0), millis());
+            delay_ms(60);
+        }
     }
     if (esp_ready()) {
         dbg_puts("ESP32 ready\r\n");
+        dbg_puts("Holding 10s before starting RFID...\r\n");
+        LCD_drawBlock(0, 28, LCD_WIDTH - 1, 35, BLACK);
+        LCD_drawString(50, 28, "warming up 10s", WHITE, BLACK);
+        {
+            uint32_t t_warm = millis();
+            while ((millis() - t_warm) < 10000) {
+                ring_spinner_tick(&ring, NEOPIXEL_COLOR(255, 100, 0), millis());
+                delay_ms(60);
+            }
+        }
     } else {
         dbg_puts("ESP32 not ready — proceeding without uplink\r\n");
-        LCD_drawBlock(0, 20, LCD_WIDTH - 1, 27, BLACK);
-        LCD_drawString(4, 20, "no ESP32, scan only", YELLOW, BLACK);
     }
+    ring_off(&ring);
+    display_update(0, esp_ready());
 
     /* YRM100 setup */
     yrm100_t rfid;
@@ -424,7 +554,8 @@ int main(void) {
     dbg_puts("Starting multi-inventory...\r\n\r\n");
     yrm100_start_multi_inventory(&rfid, 0xFFFF);
 
-    uint32_t last_send = millis();
+    uint32_t last_uplink  = millis();
+    uint32_t last_display = millis();
     uint32_t poll_ok = 0, poll_timeout = 0, poll_err = 0;
 
     while (1) {
@@ -436,6 +567,7 @@ int main(void) {
             if (find_or_add_tag(&tag)) {
                 dbg_puts("[NEW] ");
                 print_tag(&tag);
+                ring_pulse_start(NEOPIXEL_COLOR(0, 255, 0), 400);
             }
         } else if (s == YRM100_ERR_TIMEOUT) {
             poll_timeout++;
@@ -443,7 +575,26 @@ int main(void) {
             poll_err++;
         }
 
-        if ((millis() - last_send) >= SCAN_INTERVAL_MS) {
+        /* TTL prune + LCD refresh — both run on the fast cadence so stale
+         * tags drop within TAG_TTL_MS + DISPLAY_INTERVAL_MS of leaving range. */
+        if ((millis() - last_display) >= DISPLAY_INTERVAL_MS) {
+            uint8_t tags_before_prune = num_tags;
+            prune_stale_tags();
+            if (num_tags < tags_before_prune) {
+                ring_pulse_start(NEOPIXEL_COLOR(255, 0, 0), 400);
+            }
+            display_update(num_tags, esp_ready());
+            last_display = millis();
+        }
+
+        /* Advance any in-flight ring pulse — non-blocking, so the poll loop
+         * and the uplink timer keep ticking while the fade animates. */
+        ring_pulse_tick(&ring);
+
+        /* Stats + ESP uplink. The ESP is naturally gated on esp_ready() so
+         * back-to-back sends are skipped while Firestore is still flushing
+         * the previous batch. */
+        if ((millis() - last_uplink) >= UPLINK_INTERVAL_MS) {
             dbg_puts("[poll] ok=");   dbg_print_u8(poll_ok > 255 ? 255 : poll_ok);
             dbg_puts(" to=");         dbg_print_u8(poll_timeout > 255 ? 255 : poll_timeout);
             dbg_puts(" err=");        dbg_print_u8(poll_err > 255 ? 255 : poll_err);
@@ -452,9 +603,6 @@ int main(void) {
             poll_ok = poll_timeout = poll_err = 0;
             rx_dropped = 0;
 
-            /* Drop tags that haven't been re-scanned recently */
-            prune_stale_tags();
-
             if (esp_ready()) {
                 dbg_puts("[UART] sending ");
                 dbg_print_u8(num_tags);
@@ -462,11 +610,7 @@ int main(void) {
                 esp_send_tags(seen_tags, num_tags);
             }
 
-            display_update(num_tags, num_tags > 0 ? &seen_tags[num_tags - 1] : 0);
-
-            last_send = millis();
-            /* tags persist; prune_stale_tags() removes them when TTL expires.
-               Inventory keeps running from the initial 0xFFFF rounds. */
+            last_uplink = millis();
         }
     }
 }

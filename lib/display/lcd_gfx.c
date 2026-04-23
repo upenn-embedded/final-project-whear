@@ -6,7 +6,7 @@
 
 #include "lcd_gfx.h"
 #include "st7735.h"
-#include "../ASCII_LUT.h"
+#include "ASCII_LUT.h"
 
 static void drawPixelInBounds(short x, short y, uint16_t color) {
     if (x >= 0 && x < LCD_WIDTH && y >= 0 && y < LCD_HEIGHT) {
@@ -117,6 +117,46 @@ void LCD_drawString(uint8_t x, uint8_t y, const char *str, uint16_t fg, uint16_t
         } else {
             LCD_drawChar(x, y, (uint8_t)*str, fg, bg);
             x += 6;
+        }
+        str++;
+    }
+}
+
+/* Draw a glyph at an integer pixel-scale. Each source pixel becomes a
+ * scale×scale filled block. Falls back to plain LCD_drawChar for scale<=1. */
+void LCD_drawCharScaled(uint8_t x, uint8_t y, uint16_t character,
+                        uint16_t fColor, uint16_t bColor, uint8_t scale) {
+    if (scale <= 1) {
+        LCD_drawChar(x, y, character, fColor, bColor);
+        return;
+    }
+    uint16_t row = character - 0x20;
+    if ((uint16_t)x + 5u * scale > LCD_WIDTH) return;
+    if ((uint16_t)y + 8u * scale > LCD_HEIGHT) return;
+    for (uint8_t i = 0; i < 5; i++) {
+        uint8_t pixels = (uint8_t)ASCII[row][i];
+        for (uint8_t j = 0; j < 8; j++) {
+            uint16_t c = ((pixels >> j) & 1) ? fColor : bColor;
+            uint8_t x0 = (uint8_t)(x + i * scale);
+            uint8_t y0 = (uint8_t)(y + j * scale);
+            LCD_drawBlock(x0, y0,
+                          (uint8_t)(x0 + scale - 1),
+                          (uint8_t)(y0 + scale - 1), c);
+        }
+    }
+}
+
+void LCD_drawStringScaled(uint8_t x, uint8_t y, const char *str,
+                          uint16_t fg, uint16_t bg, uint8_t scale) {
+    if (scale == 0) scale = 1;
+    uint8_t step = (uint8_t)(6 * scale);
+    while (*str != '\0') {
+        if (*str == '\n') {
+            y = (uint8_t)(y + 8 * scale);
+            x = 0;
+        } else {
+            LCD_drawCharScaled(x, y, (uint8_t)*str, fg, bg, scale);
+            x = (uint8_t)(x + step);
         }
         str++;
     }

@@ -5,10 +5,7 @@ ARM_CC      = arm-none-eabi-gcc
 ARM_OBJCOPY = arm-none-eabi-objcopy
 ARM_SIZE    = arm-none-eabi-size
 OPENOCD     = openocd
-PIO         = pio
-
-# Windows: point STM32_PROGRAMMER at the CubeIDE-bundled CLI if it's not on PATH
-STM32_PROGRAMMER ?= STM32_Programmer_CLI
+PIO         = ~/.platformio/penv/bin/pio
 
 # ── STM32F411RE build flags ──────────────────────────────────────
 MCPU_FLAGS  = -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
@@ -17,7 +14,9 @@ CFLAGS      = $(MCPU_FLAGS) -Os -Wall -Wextra -std=c11 \
 LDFLAGS     = $(MCPU_FLAGS) -T stm32f411re.ld -nostartfiles \
               --specs=nosys.specs -Wl,--gc-sections
 
-STM32_SRC   = main.c startup.c $(wildcard lib/*/*.c)
+# Skip lib/Reference_*/ — those are vendor reference dumps, not ours.
+STM32_SRC   = main.c startup.c \
+              $(filter-out lib/Reference_%/%, $(wildcard lib/*/*.c))
 
 # ── Default: build both targets ───────────────────────────────────
 all: main esp
@@ -32,8 +31,9 @@ main.elf: $(STM32_SRC) stm32f411re.ld
 main.bin: main.elf
 	$(ARM_OBJCOPY) -O binary $< $@
 
-flash-main: main.bin
-	$(STM32_PROGRAMMER) -c port=SWD -w $< 0x08000000 -v -hardRst
+flash-main: main.elf
+	$(OPENOCD) -f board/st_nucleo_f4.cfg \
+	           -c "program $< verify reset exit"
 
 monitor-main:
 	@echo "Opening ST-Link VCOM at 115200 (Ctrl-A, k, y to exit)"

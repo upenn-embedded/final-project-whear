@@ -174,25 +174,69 @@ static bool firestore_delete_doc(const String &doc_id) {
 
 /* ── Firestore: full replace (list → delete stale → patch current) ── */
 
-static void firestore_full_replace(tag_t *tags, uint8_t tag_count) {
-    String existing[MAX_DOC_IDS];
-    int existing_count = list_existing_docs(existing, MAX_DOC_IDS);
-    Serial.printf("[firestore] existing=%d  current=%d\n",
-                  existing_count, tag_count);
+/* ── Local cache of Firestore document IDs ────────────────────────
+ * The only writer to this collection is this ESP32, so after the initial
+ * GET we can trust our local view and skip the per-uplink round-trip.
+ * Each upload becomes a pure diff: DELETE the docs we had cached but no
+ * longer see, PATCH the tags we haven't cached yet. Tags already in the
+ * cache need no action — saves ~200-500 ms per uplink for steady state. */
+static String cached_ids[MAX_DOC_IDS];
+static int    cached_count       = 0;
+static bool   cache_primed       = false;
 
-    for (int i = 0; i < existing_count; i++) {
-        bool found = false;
-        for (uint8_t j = 0; j < tag_count; j++) {
-            if (existing[i] == String(tags[j].hex_id)) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) firestore_delete_doc(existing[i]);
+static void firestore_full_replace(tag_t *tags, uint8_t tag_count) {
+    if (!cache_primed) {
+        cached_count = list_existing_docs(cached_ids, MAX_DOC_IDS);
+        cache_primed = true;
+        Serial.printf("[firestore] cache primed with %d existing docs\n",
+                      cached_count);
     }
 
-    for (uint8_t i = 0; i < tag_count; i++)
-        firestore_patch_doc(tags[i].hex_id);
+    /* DELETE: any cached ID absent from the current tag set. Compact the
+     * cache array in place so we keep only the survivors. */
+    int write = 0;
+    for (int i = 0; i < cached_count; i++) {
+        bool found = false;
+        for (uint8_t j = 0; j < tag_count; j++) {
+            if (cached_ids[i] == String(tags[j].hex_id)) { found = true; break; }
+        }
+        if (found) {
+            if (write != i) cached_ids[write] = cached_ids[i];
+            write++;
+        } else {
+            firestore_delete_doc(cached_ids[i]);
+        }
+    }
+    cached_count = write;
+
+    /* Mark each current tag as new (needs PATCH) or cached (skip). */
+    bool needs_patch[MAX_TAGS];
+    int  patches = 0;
+    for (uint8_t i = 0; i < tag_count; i++) {
+        bool in_cache = false;
+        for (int k = 0; k < cached_count; k++) {
+            if (cached_ids[k] == String(tags[i].hex_id)) { in_cache = true; break; }
+        }
+        needs_patch[i] = !in_cache;
+        if (!in_cache) patches++;
+    }
+
+    Serial.printf("[firestore] cached=%d  current=%d  patches=%d\n",
+                  cached_count, tag_count, patches);
+
+    /* PATCH phase — drop READY so the STM32 shows "Updating Cloud".
+     * Skip the whole block (and the READY-low window) if nothing to write. */
+    if (patches > 0) {
+        digitalWrite(PIN_READY, LOW);
+        for (uint8_t i = 0; i < tag_count; i++) {
+            if (!needs_patch[i]) continue;
+            if (firestore_patch_doc(tags[i].hex_id) &&
+                cached_count < MAX_DOC_IDS) {
+                cached_ids[cached_count++] = String(tags[i].hex_id);
+            }
+        }
+        digitalWrite(PIN_READY, HIGH);
+    }
 }
 
 /* ── Setup ───────────────────────────────────────────────────────── */
@@ -241,7 +285,8 @@ void loop() {
     tag_t tags[MAX_TAGS];
     int count = read_frame(tags);
     if (count < 0) {
-        delay(10);   /* no full frame yet, yield */
+        delay(1);    /* no full frame yet — yield minimally so the WiFi
+                        stack runs, but don't burn 10 ms of latency. */
         return;
     }
 
@@ -249,8 +294,7 @@ void loop() {
     for (int i = 0; i < count; i++)
         Serial.printf("  tag %d: %s\n", i, tags[i].hex_id);
 
-    /* Upload to Firestore */
-    digitalWrite(PIN_READY, LOW);
+    /* Upload to Firestore. READY is driven low only inside the PATCH loop
+     * of firestore_full_replace, not around the GET/DELETE bookkeeping. */
     firestore_full_replace(tags, (uint8_t)count);
-    digitalWrite(PIN_READY, HIGH);
 }

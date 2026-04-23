@@ -35,12 +35,13 @@ typedef struct {
 #define SPI_SR_TXE     (1u << 1)
 #define SPI_SR_BSY     (1u << 7)
 
-/* ── Pin assignments ───────────────────────────────────────────── */
-#define PIN_SCK   5   /* PA5 */
-#define PIN_MOSI  5   /* PB5 */
-#define PIN_DC    0   /* PB0 */
-#define PIN_RST   1   /* PB1 */
-#define PIN_CS    2   /* PB2 */
+/* ── Pin assignments ───────────────────────────────────────────────
+ * SCK and MOSI are on GPIOA; DC, RST, CS are on GPIOB. */
+#define PIN_SCK   5   /* PA5  */
+#define PIN_MOSI  7   /* PA7  */
+#define PIN_DC    6   /* PB6  */
+#define PIN_RST   15  /* PB15 */
+#define PIN_CS    5   /* PB5  */
 
 #define BSRR_SET(pin)   (1u << (pin))
 #define BSRR_RESET(pin) (1u << ((pin) + 16))
@@ -106,22 +107,23 @@ static void lcd_pin_init(void) {
     RCC->AHB1ENR |= (1u << 0) | (1u << 1);
     RCC->APB2ENR |= (1u << 12);
 
-    /* PA5 = SCK — alternate function AF5 */
-    GPIOA->MODER &= ~(3u << (PIN_SCK * 2));
-    GPIOA->MODER |=  (2u << (PIN_SCK * 2));
-    GPIOA->AFR[0] &= ~(0xFu << (PIN_SCK * 4));
-    GPIOA->AFR[0] |=  (5u   << (PIN_SCK * 4));
-    GPIOA->OSPEEDR |= (3u << (PIN_SCK * 2));
+    /* PA5 = SCK, PA7 = MOSI — both AF5 on SPI1 */
+    GPIOA->MODER &= ~((3u << (PIN_SCK * 2)) | (3u << (PIN_MOSI * 2)));
+    GPIOA->MODER |=  ((2u << (PIN_SCK * 2)) | (2u << (PIN_MOSI * 2)));
+    GPIOA->AFR[0] &= ~((0xFu << (PIN_SCK * 4)) | (0xFu << (PIN_MOSI * 4)));
+    GPIOA->AFR[0] |=  ((5u   << (PIN_SCK * 4)) | (5u   << (PIN_MOSI * 4)));
+    GPIOA->OSPEEDR |= (3u << (PIN_SCK * 2)) | (3u << (PIN_MOSI * 2));
 
-    /* PB5 = MOSI (AF5); PB0=DC, PB1=RST, PB2=CS (push-pull output) */
-    GPIOB->MODER &= ~((3u << (PIN_MOSI * 2)) | (3u << (PIN_DC * 2))
-                    | (3u << (PIN_RST * 2))  | (3u << (PIN_CS * 2)));
-    GPIOB->MODER |=  ((2u << (PIN_MOSI * 2)) | (1u << (PIN_DC * 2))
-                    | (1u << (PIN_RST * 2))  | (1u << (PIN_CS * 2)));
-    GPIOB->AFR[0] &= ~(0xFu << (PIN_MOSI * 4));
-    GPIOB->AFR[0] |=  (5u   << (PIN_MOSI * 4));
-    GPIOB->OSPEEDR |= (3u << (PIN_MOSI * 2)) | (3u << (PIN_DC * 2))
-                    | (3u << (PIN_RST * 2))  | (3u << (PIN_CS * 2));
+    /* PB5 = CS, PB6 = DC, PB15 = RST — push-pull outputs */
+    GPIOB->MODER &= ~((3u << (PIN_DC * 2))
+                    | (3u << (PIN_RST * 2))
+                    | (3u << (PIN_CS * 2)));
+    GPIOB->MODER |=  ((1u << (PIN_DC * 2))
+                    | (1u << (PIN_RST * 2))
+                    | (1u << (PIN_CS * 2)));
+    GPIOB->OSPEEDR |= (3u << (PIN_DC * 2))
+                    | (3u << (PIN_RST * 2))
+                    | (3u << (PIN_CS * 2));
 
     /* Idle CS high, DC high, then pulse RST */
     LCD_cs_high();
@@ -134,7 +136,7 @@ static void lcd_pin_init(void) {
 
 static void SPI_Controller_Init(void) {
     /* Master, MSB first, CPOL=0 CPHA=0, 8-bit frames, BR=fPCLK/2 (=8 MHz).
-     * SSM/SSI manage NSS internally so we can drive CS from software (PB2). */
+     * SSM/SSI manage NSS internally so we can drive CS from software (PB5). */
     SPI1->CR2 = 0;
     SPI1->CR1 = SPI_CR1_SSM
               | SPI_CR1_SSI
