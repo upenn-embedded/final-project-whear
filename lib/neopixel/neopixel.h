@@ -1,3 +1,10 @@
+/* NeoPixel (WS2812B) driver — public API.
+ *
+ * Tiny driver for our 12-LED ring. The public surface is basically a
+ * framebuffer (set_pixel_*, fill, clear, brightness) plus a show() to
+ * flush it out to the strip. All the horrible bit-banging lives in the
+ * .c file. Colors are 24-bit packed 0x00RRGGBB, same as Adafruit. */
+
 #ifndef NEOPIXEL_H
 #define NEOPIXEL_H
 

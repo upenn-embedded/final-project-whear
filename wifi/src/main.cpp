@@ -1,3 +1,19 @@
+/* Whear ESP32 WiFi bridge — the "middle" chip in the project.
+ *
+ * Our STM32 can't do WiFi on its own, so we put this little Adafruit
+ * Feather HUZZAH32 between it and the internet. What this chip does:
+ *   1. Boot, connect to WiFi, pull the READY pin high so the STM32
+ *      knows it's safe to start streaming tag frames.
+ *   2. Listen on UART2 for tag-list frames from the STM32 (framed
+ *      between 0xAA start and 0x55 end markers).
+ *   3. Mirror the current set of tags into a Firestore collection,
+ *      using PATCH (upsert) for new tags and DELETE for tags the
+ *      STM32 no longer sees.
+ *   4. Drop READY low while a Firestore PATCH batch is in flight so
+ *      the STM32 shows "Updating Cloud" on the LCD.
+ * The iOS app just watches the Firestore collection and updates in
+ * real time — we don't need to know anything about the phone here. */
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>

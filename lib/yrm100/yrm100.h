@@ -1,14 +1,32 @@
+/* YRM100 UHF RFID reader driver.
+ *
+ * This is our portable driver for the YRM100X RFID reader module. The
+ * module speaks a simple packet protocol over a 3.3 V UART:
+ *
+ *   [HEADER=0xBB][TYPE][CMD][PARAM_LEN (2 bytes, big-endian)]
+ *                               [params...][CHECKSUM][END=0x7E]
+ *
+ * We can talk to it from any MCU — the driver itself has no STM32-specific
+ * code. The user of the driver just fills out a struct of UART callbacks
+ * (init/send/recv/available) and passes it in, so this same code would
+ * work on Arduino, ESP32, anything. That separation-of-concerns idea is
+ * basically the "hardware abstraction layer" idea from lecture. */
+
 #ifndef YRM100_H
 #define YRM100_H
 
 #include <stdint.h>
 #include <stddef.h>
 
-/* ── Frame delimiters ─────────────────────────────────────────────── */
+/* ── Frame delimiters ───────────────────────────────────────────────
+ * Every frame going either direction is bookended by these magic bytes.
+ * They make it easy to re-sync the parser if we ever drop a byte — just
+ * keep reading until we see 0xBB, which is the "start of frame" marker. */
 #define YRM100_HEADER 0xBB
 #define YRM100_END    0x7E
 
 /* ── Frame types ──────────────────────────────────────────────────── */
+/* Second byte of every frame indicates who's talking to whom and why. */
 #define YRM100_TYPE_CMD      0x00   /* host  -> module  */
 #define YRM100_TYPE_RESPONSE 0x01   /* module -> host   */
 #define YRM100_TYPE_NOTICE   0x02   /* module -> host (inventory notification) */
@@ -104,7 +122,10 @@
 #define YRM100_MAX_FRAME_LEN  256
 #define YRM100_MAX_EPC_LEN    62   /* max PC+EPC bytes */
 
-/* ── Return status ────────────────────────────────────────────────── */
+/* ── Return status ──────────────────────────────────────────────────
+ * Every driver function returns one of these so the caller can tell
+ * what went wrong. We pretty much only ever look at OK vs. TIMEOUT in
+ * main.c, but the more granular codes are here for debugging. */
 typedef enum {
     YRM100_OK = 0,
     YRM100_ERR_TIMEOUT,
@@ -113,7 +134,10 @@ typedef enum {
     YRM100_ERR_MODULE,   /* module returned an error response */
 } yrm100_status_t;
 
-/* ── Tag inventory result ─────────────────────────────────────────── */
+/* ── Tag inventory result ───────────────────────────────────────────
+ * What one RFID read looks like after parsing. The EPC is the "serial
+ * number" of the tag — that's the thing we actually care about and
+ * hand up to the ESP32. Everything else (RSSI, PC, CRC) is diagnostic. */
 typedef struct {
     int8_t rssi;            /* dBm (signed) */
     uint8_t pc[2];          /* protocol control word */
@@ -122,7 +146,10 @@ typedef struct {
     uint8_t crc[2];         /* CRC-16 from tag */
 } yrm100_tag_t;
 
-/* ── Generic response ─────────────────────────────────────────────── */
+/* ── Generic response ───────────────────────────────────────────────
+ * Holds a single parsed frame from the module. The parser in yrm100.c
+ * fills one of these in from the UART stream, then higher-level helpers
+ * unpack it into a yrm100_tag_t / region byte / whatever. */
 typedef struct {
     uint8_t type;           /* frame type: 0x01 or 0x02 */
     uint8_t command;        /* echoed command code, or 0xFF for error */
@@ -132,6 +159,10 @@ typedef struct {
 } yrm100_response_t;
 
 /* ── Platform UART callbacks (user must provide) ──────────────────── */
+/* This is how we keep the driver portable. The caller fills in four
+ * function pointers that know how to talk to whatever serial port they
+ * have, and the driver just calls back into them. On our STM32 these
+ * are yrm_uart_init/send/recv_byte/data_available over in main.c. */
 typedef struct {
     void (*uart_init)(uint32_t baud);
     void (*uart_send)(const uint8_t *data, uint16_t len);
@@ -139,7 +170,9 @@ typedef struct {
     uint8_t (*uart_data_available)(void);              /* nonzero if byte ready */
 } yrm100_uart_t;
 
-/* ── Handle ───────────────────────────────────────────────────────── */
+/* ── Handle ─────────────────────────────────────────────────────────
+ * "Handle" is a fancy word for "the struct that represents one driver
+ * instance". If we ever had two RFID readers we could have two of these. */
 typedef struct {
     yrm100_uart_t uart;
     uint8_t rx_buf[YRM100_MAX_FRAME_LEN];

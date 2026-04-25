@@ -1,4 +1,9 @@
 /* LCD GFX — STM32 port of lib/LCD_GFX.h
+ *
+ * Graphics primitives on top of the st7735 SPI driver. This header is
+ * what main.c actually includes to draw to the screen — pixels, blocks,
+ * circles, lines, strings with optional integer scaling.
+ *
  * Same API as the AVR reference; ASCII font table is pulled in by the .c. */
 
 #ifndef LCD_GFX_STM32_H_
@@ -6,6 +11,9 @@
 
 #include <stdint.h>
 
+/* Preset colors in RGB565 format (5 bits red, 6 green, 5 blue). These
+ * were hand-computed once so we don't call rgb565() at runtime for the
+ * common ones. */
 #define BLACK   0x0000
 #define WHITE   0xFFFF
 #define BLUE    0x001F

@@ -3,6 +3,14 @@
  * Uses cycle-counted inline assembly for bit timing so the waveform is
  * deterministic on a 16 MHz HSI clock. Interrupts are disabled during
  * the ~360 µs transfer.
+ *
+ * Quick refresher on how NeoPixels work: each LED is actually a chained
+ * shift register + three PWM channels (R/G/B). You send 24 bits per LED
+ * in GRB order over a single data wire. The trick is that there's no
+ * clock line — the chip distinguishes 0 from 1 by the width of the HIGH
+ * pulse within a fixed ~1.25 µs window. At 16 MHz that gives us only
+ * 20 CPU cycles per bit, which is why this is written in asm — there's
+ * literally not enough time for a C loop to do the bookkeeping.
  */
 
 #include "neopixel.h"
@@ -29,29 +37,42 @@ static const uint8_t neopixel_gamma_table[256] = {
     255
 };
 
+/* Set up the GPIO pin that drives the LED string. We need it to be a
+ * fast push-pull output because the 800 kHz waveform has 300 ns rise
+ * times — a lazy output driver would smooth those edges into nothing. */
 void neopixel_init(neopixel_t *np, neopixel_gpio_t *port, uint8_t pin) {
     np->port = port;
     np->pin = pin;
     np->brightness = 255;
 
+    /* Wipe the framebuffer so a fresh show() draws nothing, not garbage. */
     for (uint16_t i = 0; i < NEOPIXEL_BUFFER_SIZE; i++) {
         np->pixels[i] = 0;
     }
 
-    /* Output, push-pull, very-high speed, no pull. */
+    /* Pin config: general-purpose output (MODER=01), push-pull (OTYPER=0),
+     * max slew rate (OSPEEDR=11), no pull resistor (PUPDR=00). */
     port->MODER   &= ~(3u << (pin * 2));
     port->MODER   |=  (1u << (pin * 2));
     port->OTYPER  &= ~(1u << pin);
     port->OSPEEDR |=  (3u << (pin * 2));
     port->PUPDR   &= ~(3u << (pin * 2));
 
-    /* Idle low so the first bit's rising edge is clean. */
+    /* Drive the line LOW now so the very first bit we send has a clean
+     * 0→1 rising edge (WS2812B latches on rising edges). Writing to BSRR
+     * bits 16..31 resets the matching output bit atomically. */
     port->BSRR = (1u << (pin + 16));
 }
 
+/* Copy one pixel's R/G/B into the framebuffer, scaling for brightness
+ * on the way. The WS2812B chain expects GRB order, NOT RGB, which is a
+ * classic foot-gun — the colors look swapped if you forget. */
 static inline void neopixel_store(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b,
                                   uint8_t brightness) {
     if (brightness < 255) {
+        /* Brightness is 0..255; treat 255 as "100%, no scaling" so we
+         * don't lose one bit of resolution for no reason. The +1 makes
+         * the math round to nearest without a divide. */
         uint16_t s = (uint16_t)brightness + 1;
         r = (uint8_t)(((uint16_t)r * s) >> 8);
         g = (uint8_t)(((uint16_t)g * s) >> 8);
@@ -62,6 +83,8 @@ static inline void neopixel_store(uint8_t *dst, uint8_t r, uint8_t g, uint8_t b,
     dst[2] = b;
 }
 
+/* Public API: set LED n's color from separate R/G/B bytes. Silently
+ * ignores out-of-range indices so callers don't have to bounds-check. */
 void neopixel_set_pixel_rgb(neopixel_t *np, uint16_t n,
                             uint8_t r, uint8_t g, uint8_t b) {
     if (n >= NEOPIXEL_NUM_LEDS) return;
@@ -69,6 +92,8 @@ void neopixel_set_pixel_rgb(neopixel_t *np, uint16_t n,
                    r, g, b, np->brightness);
 }
 
+/* Same thing but takes a packed 0x00RRGGBB integer. Just unpacks and
+ * forwards — easier for callers that already have colors as constants. */
 void neopixel_set_pixel_color(neopixel_t *np, uint16_t n, uint32_t color) {
     neopixel_set_pixel_rgb(np, n,
                            (uint8_t)(color >> 16),
@@ -76,18 +101,23 @@ void neopixel_set_pixel_color(neopixel_t *np, uint16_t n, uint32_t color) {
                            (uint8_t)(color));
 }
 
+/* Paint every LED the same color. Used for the ring pulse animations. */
 void neopixel_fill(neopixel_t *np, uint32_t color) {
     for (uint16_t i = 0; i < NEOPIXEL_NUM_LEDS; i++) {
         neopixel_set_pixel_color(np, i, color);
     }
 }
 
+/* Fast "all off" that skips the brightness math — just zeroes the buffer. */
 void neopixel_clear(neopixel_t *np) {
     for (uint16_t i = 0; i < NEOPIXEL_BUFFER_SIZE; i++) {
         np->pixels[i] = 0;
     }
 }
 
+/* Store the brightness scale that the next set_pixel call will apply.
+ * Changing this doesn't retroactively rescale what's already in the
+ * buffer — you'd have to re-paint to see the effect. */
 void neopixel_set_brightness(neopixel_t *np, uint8_t brightness) {
     np->brightness = brightness;
 }
@@ -152,6 +182,11 @@ void neopixel_show(neopixel_t *np) {
     }
 }
 
+/* HSV → packed RGB conversion. HSV is a much friendlier color model
+ * for animation math ("slide the hue while keeping saturation & value
+ * constant") than raw RGB, where a smooth rainbow requires six if-else
+ * branches. Inputs match Adafruit's NeoPixel library so external code
+ * that assumes that format still works. */
 uint32_t neopixel_color_hsv(uint16_t hue, uint8_t sat, uint8_t val) {
     uint8_t r, g, b;
 
@@ -185,6 +220,9 @@ uint32_t neopixel_color_hsv(uint16_t hue, uint8_t sat, uint8_t val) {
     return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
 }
 
+/* LEDs are linear-in-current but our eyes are logarithmic. Apply this
+ * gamma correction to an 8-bit channel so a fade from 0 to 255 looks
+ * visually smooth instead of "nothing...nothing...BRIGHT AS THE SUN". */
 uint8_t neopixel_gamma8(uint8_t x) {
     return neopixel_gamma_table[x];
 }

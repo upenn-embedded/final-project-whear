@@ -1,5 +1,9 @@
 /* ST7735 display driver — STM32F411RE port
  *
+ * Low-level interface to the TFT controller. This header exposes just
+ * enough for the GFX layer (lcd_gfx.c) to talk to the hardware: init,
+ * SPI byte/word send, address-window set, and the CS/DC control helpers.
+ *
  * API mirrors lib/ST7735.h (AVR reference) so that lib/LCD_GFX.c-style
  * code can call it unchanged. Hardware layer drives SPI1 + three GPIOs.
  *
