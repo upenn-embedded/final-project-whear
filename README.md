@@ -48,10 +48,13 @@ Getting ready shouldn’t be stressful, and yet most people routinely can’t fi
  │ STM32F411RE (Nucleo-64, bare-metal C)                               │
  │                                                                     │
  │  • YRM100 driver (frame parser, multi-inventory poll)               │
- │  • Tag table: add-on-new, refresh-on-seen, prune after TTL          │
+ │  • IRQ-driven USART1 RX into a 1024-byte ring (USART1_IRQHandler)   │
+ │  • Tag table: add-on-new, refresh-on-seen, prune after TTL (2 s)    │
+ │  • ST7735 1.8" TFT over SPI1 — live count + ESP status              │
+ │  • 12-LED NeoPixel ring on PB4 — amber spinner / green / red pulse  │
  │  • Debug console → ST-Link VCOM (USART2, PA2/PA3)                   │
- │  • UART frame to ESP32 every SCAN_INTERVAL (USART6, PC6/PC7)        │
- │  • READY-pin handshake on PA8 (input from ESP32)                    │
+ │  • UART frame to ESP32 every UPLINK_INTERVAL (USART6, PC6/PC7)      │
+ │  • READY-pin back-pressure on PA8 (low while ESP is uploading)      │
  └─────────────────────────────────────────┬───────────────────────────┘
                                            │ UART6 @ 115200
                                            │ [0xAA | count | {len,EPC}xN | 0x55]
@@ -61,7 +64,8 @@ Getting ready shouldn’t be stressful, and yet most people routinely can’t fi
  │                                                                     │
  │  • UART2 frame reader (GPIO14 RX / GPIO32 TX)                       │
  │  • WiFi.begin → drives READY pin (GPIO27) high when associated      │
- │  • Firestore REST: GET list → DELETE stale → PATCH current          │
+ │  • Cached doc-ID list (primed once via GET) → diff against frame    │
+ │  • Firestore REST: DELETE stale, PATCH new only; READY low on PATCH │
  └─────────────────────────────────────────┬───────────────────────────┘
                                            │ HTTPS
                                            ▼
@@ -100,10 +104,12 @@ Onshape CAD: https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | SRS-01 | The STM32 shall drive the YRM100 in continuous multi-inventory mode and add each newly-seen EPC to its presence table within 100 ms of the reader notification.              |
 | SRS-02 | The STM32 shall de-duplicate EPCs so that the same tag is stored exactly once, and shall track at least 20 concurrent unique tags.                                           |
-| SRS-03 | A tag shall be dropped from the presence table if it has not been re-seen within `TAG_TTL_MS` (10 s), so removing a garment from the antenna field is reflected within 10 s. |
-| SRS-04 | Every `SCAN_INTERVAL_MS` (5 s) the STM32 shall transmit the current presence set to the ESP32 as a framed UART message (0xAA header, count, {len,EPC}×N, 0x55 footer).        |
-| SRS-05 | The ESP32 shall associate with the configured Wi-Fi network on boot and drive the READY pin high once Wi-Fi is up, and shall re-associate automatically on disconnect.       |
-| SRS-06 | On each frame from the STM32 the ESP32 shall reconcile the Firestore `scanner` collection against the received set (PATCH new/present docs, DELETE absent docs).             |
+| SRS-03 | A tag shall be dropped from the presence table if it has not been re-seen within `TAG_TTL_MS` (2 s), so removing a garment from the antenna field is reflected within ~2 s.  |
+| SRS-04 | Every `UPLINK_INTERVAL_MS` (300 ms) the STM32 shall transmit the current presence set to the ESP32 as a framed UART message (0xAA header, count, {len,EPC}×N, 0x55 footer).  |
+| SRS-05 | The ESP32 shall associate with Wi-Fi on boot and drive the READY pin high when idle, and shall pull READY low for the duration of any Firestore PATCH batch as back-pressure to the STM32. |
+| SRS-06 | On each frame from the STM32 the ESP32 shall reconcile the Firestore `scanner` collection against the received set (PATCH new docs, DELETE absent docs), maintaining a local cache of existing document IDs to avoid a GET every cycle. |
+| SRS-07 | The STM32 shall drive an ST7735 1.8" TFT showing the live tag count and ESP32 status (`WiFi Connected` / `Updating Cloud`), refreshing every `DISPLAY_INTERVAL_MS` (200 ms). |
+| SRS-08 | The STM32 shall drive a 12-LED NeoPixel ring: amber spinner during boot/ESP-wait, green pulse on each new tag, red pulse on each TTL eviction.                               |
 
 ### 6. Hardware Requirements Specification (HRS)
 
@@ -161,11 +167,13 @@ Onshape CAD: https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f
 ```
 final-project-whear/
 ├── makefile            # builds STM32 firmware + delegates ESP32 build to PlatformIO
-├── main.c              # STM32F411RE bare-metal app (USARTs, tag table, UART framer)
-├── startup.c           # Cortex-M4 vector table + Reset_Handler
+├── main.c              # STM32F411RE bare-metal app (USARTs, tag table, UART framer, LCD, ring)
+├── startup.c           # Cortex-M4 vector table + Reset_Handler (USART1_IRQHandler)
 ├── stm32f411re.ld      # linker script (512 K flash, 128 K RAM)
 ├── lib/
-│   └── yrm100/         # YRM100 driver (frame parser, multi-inventory, region / power)
+│   ├── yrm100/         # YRM100 driver (frame parser, multi-inventory, region / power)
+│   ├── display/        # ST7735 SPI driver + tiny GFX (font, drawString, drawBlock)
+│   └── neopixel/       # Bit-banged WS2812 driver for the 12-LED status ring
 ├── wifi/               # ESP32 PlatformIO project (Arduino framework)
 │   ├── platformio.ini
 │   ├── include/config.h    # Wi-Fi + Firestore settings
@@ -260,14 +268,16 @@ app demo link: https://drive.google.com/file/d/1InsEFuI7ygspXl7Fqmm-XXnCJfS2OlbG
 At MVP we're running two MCUs in a producer / bridge split. The RFID hot path lives on a bare-metal **STM32F411RE** (Nucleo-64, Cortex-M4F @ 16 MHz HSI), and the network path lives on an **ESP32 Feather HUZZAH32 V2** running the Arduino framework. The two are linked by a dedicated UART and a single GPIO handshake line. See *3. System Block Diagram* above for the full data-flow picture — the MVP hardware is exactly that diagram.
 
 - **RFID front end.** A **YRM100** module (Impinj R2000 inside) behind a **6 dBi UHF patch antenna** on an SMA pigtail. Configured at boot for the US band (902.25–927.75 MHz) at 26 dBm via `yrm100_set_region(YRM100_REGION_US)` and `yrm100_set_tx_power(YRM100_POWER_2600)`.
-- **STM32 USART map.**
-  - **USART1** (PA9 / PA10, AF7) ↔ YRM100 at 115200 baud — the hot RFID link.
-  - **USART2** (PA2 / PA3, AF7) → ST-Link VCOM — debug / validation console.
-  - **USART6** (PC6 / PC7, AF8) → ESP32 UART2 — framed tag set.
-  - **PA8** — input from the ESP32 READY pin; STM32 blocks on this before running inventory.
-- **ESP32 pin map.** UART2 RX = GPIO14, UART2 TX = GPIO32, READY output = GPIO27.
-- **Power.** Each board takes its own 5 V USB (Nucleo via ST-Link USB, Feather via USB-C) and generates its own 3.3 V rail. No custom PCB — Nucleo + Feather + YRM100 wired with jumpers inside the 3D-printed enclosure.
-- **Mechanical.** Closet-rail-mount 3D-printed box with an integrated hook. External SMA antenna, internal standoffs for both boards, cable passthroughs for USB.
+- **STM32 pin map.**
+  - **USART1** (PA9 / PA10, AF7) ↔ YRM100 at 115200 baud — IRQ-driven RX into a 1024-byte ring buffer (the hot RFID link).
+  - **USART2** (PA2 / PA3, AF7) → ST-Link VCOM — debug / validation console (polled).
+  - **USART6** (PC6 / PC7, AF8) → ESP32 UART2 — framed tag set (polled TX).
+  - **SPI1** → ST7735 1.8" TFT: PA5 SCK, PA7 MOSI, PB6 DC, PB15 RST, PB5 CS.
+  - **PB4** → 12-LED NeoPixel ring DIN, bit-banged 800 kHz one-wire (cycle-counted with IRQs masked during a `show()`).
+  - **PA8** — input from the ESP32 READY pin; STM32 blocks on this before initial RFID setup, and uses it as a back-pressure signal in steady state (skips the UART send if low).
+- **ESP32 pin map.** UART2 RX = GPIO14, UART2 TX = GPIO32, READY output = GPIO27 (HIGH when idle, LOW for the duration of any Firestore PATCH batch).
+- **Power.** Each board takes its own 5 V USB (Nucleo via ST-Link USB, Feather via USB-C) and generates its own 3.3 V rail. No custom PCB — Nucleo + Feather + YRM100 + LCD + ring wired with jumpers inside the 3D-printed enclosure.
+- **Mechanical.** Closet-rail-mount 3D-printed box with an integrated hook, a window cutout for the LCD, and standoffs for both boards. External SMA antenna, USB pass-throughs.
 
 ### Firmware Implementation
 
@@ -282,24 +292,30 @@ Everything in this repo is hand-written C / C++. No ST HAL, no CubeMX, no vendor
 
 **Application logic (`main.c` main loop).**
 
-1. Bring up clocks, GPIO, USART2 (debug), USART6 (ESP32).
-2. Block on `esp_ready()` (PA8) until the ESP32 signals it has joined Wi-Fi.
-3. Initialize the YRM100, set region + TX power, and dump raw bytes on the RFID UART for 2 s as a sanity check (`[diag] raw RX window`).
+1. Bring up clocks, GPIO, USART2 (debug), USART6 (ESP32), the NeoPixel ring (amber spinner running while the rest comes up), and the ST7735 LCD ("booting…" placeholder).
+2. Wait up to 5 s for `esp_ready()` (PA8) to go high; if it does, hold for an additional 10 s warm-up so the ESP32 finishes priming its Firestore doc-ID cache. Both waits keep ticking the ring spinner so the device is visibly alive.
+3. Initialize the YRM100 (the driver flips on `USART_CR1_RXNEIE` + the NVIC line, so all subsequent RFID bytes go into `rx_buf` via `USART1_IRQHandler`). Set region + TX power, and dump raw bytes on the RFID UART for 2 s as a sanity check (`[diag] raw RX window`).
 4. Call `yrm100_start_multi_inventory(&rfid, 0xFFFF)` — the reader now streams notices on its own.
 5. Loop forever calling `yrm100_poll_inventory`:
-   - On `YRM100_OK`, run `find_or_add_tag`: linear-search the 20-slot `seen_tags` table, update `tag_last_seen` on a hit, append on a miss, print `[NEW] EPC: … RSSI: … dBm` for first sightings.
+   - On `YRM100_OK`, run `find_or_add_tag`: linear-search the 20-slot `seen_tags` table, update `tag_last_seen` on a hit, append on a miss, print `[NEW] EPC: … RSSI: … dBm` for first sightings, and fire a non-blocking green `ring_pulse_start` for new tags.
    - On `YRM100_ERR_TIMEOUT`, bump a counter; on other errors, bump the error counter.
-6. Every `SCAN_INTERVAL_MS` (5 s) dump the poll counters, call `prune_stale_tags()` to drop any EPC not re-seen within `TAG_TTL_MS` (10 s), then — if `esp_ready()` is still high — call `esp_send_tags()` to frame the current set to the ESP32.
+6. Every `DISPLAY_INTERVAL_MS` (200 ms) call `prune_stale_tags()` (TTL = `TAG_TTL_MS`, 2 s) — if `num_tags` dropped, fire a red ring pulse — then redraw the LCD with the current count and ESP status.
+7. Every iteration call `ring_pulse_tick()` to advance any in-flight pulse. Pulses are fade-in / fade-out triangles capped at ~66 fps; the byte-level RX ISR keeps the ring buffer filling the entire time, so no RFID frames are dropped during animation.
+8. Every `UPLINK_INTERVAL_MS` (300 ms) dump the poll counters (including `rxdrop` for ISR-side overflow), and — if `esp_ready()` is still high — call `esp_send_tags()` to frame the current set to the ESP32. If READY is low (ESP32 mid-PATCH), skip the send and try again next cycle.
 
 **Critical driver — YRM100 (`lib/yrm100/yrm100.{c,h}`).** Written from scratch against the Impinj manual. Frame layout is `0xBB | type | CMD | len_hi | len_lo | payload… | checksum | 0x7E` with three frame types (command, response, notice). The driver exposes a callback-based UART interface (`uart_init`, `uart_send`, `uart_recv_byte`, `uart_data_available`), a byte-by-byte parser with checksum validation, and high-level calls for `SET_REGION`, `SET_TX_POWER`, `START_MULTI_INVENTORY`, `STOP_INVENTORY`, `READ`, `WRITE`. `yrm100_poll_inventory` pulls notices out of the stream and hands back a struct carrying the EPC bytes, length, and signed RSSI in dBm.
 
-**Critical driver — STM32↔ESP32 framer (`esp_send_tags` / `read_frame`).** Deliberately simple and self-resyncing: `0xAA | count | {len, EPC[len]}×count | 0x55`. Start marker is searched for with no overall timeout (idle state); after that every byte has a 500 ms per-byte timeout. A malformed frame just returns `-1` and the reader goes back to hunting for `0xAA`. The **READY pin** is the out-of-band signal that lets the STM32 know the ESP32 is alive and on Wi-Fi before sending frames.
+**Critical driver — STM32↔ESP32 framer (`esp_send_tags` / `read_frame`).** Deliberately simple and self-resyncing: `0xAA | count | {len, EPC[len]}×count | 0x55`. Start marker is searched for with no overall timeout (idle state); after that every byte has a 500 ms per-byte timeout. A malformed frame just returns `-1` and the reader goes back to hunting for `0xAA`. The **READY pin** is now a two-purpose signal: at boot it tells the STM32 the ESP32 has Wi-Fi (gate before initial RFID setup), and in steady state the ESP32 pulls it low for the duration of a Firestore PATCH batch as back-pressure — the STM32 reads it via `esp_ready()` before each `esp_send_tags()` call and skips the send if the ESP is busy.
 
-**Critical driver — Firestore reconciler (`wifi/src/main.cpp`).** On each frame from the STM32, `firestore_full_replace` does:
+**Critical driver — ST7735 + LCD GFX (`lib/display/`).** `st7735.c` brings up SPI1 from the bare register layer (no HAL), drives DC/RST/CS as plain GPIO, and pushes a 16-bit RGB565 framebuffer-less pixel stream. `lcd_gfx.c` adds the bare minimum on top: `LCD_drawBlock` for solid rectangles (used as an erase before each redraw), and `LCD_drawString` / `LCD_drawStringScaled` driven from a 6×8 ASCII font in `ASCII_LUT.h`. The whole `display_update` redraw fits inside the 200 ms cadence with room to spare.
 
-1. `GET /v1/projects/whear-fb2ac/databases/(default)/documents/scanner` → parse the doc list with ArduinoJson.
-2. For every existing doc ID not in the current tag set, issue `DELETE` on that doc.
-3. For every tag in the current set, issue `PATCH` on its doc ID with `{"fields": {"id": {"stringValue": "<epc>"}}}` (PATCH upserts — creates the doc if missing).
+**Critical driver — NeoPixel ring (`lib/neopixel/`).** Bit-banged WS2812 protocol on PB4: each LED takes 24 bits, each bit is a ~1.25 µs pulse with the 0/1 distinction in the high time. `neopixel_show()` masks IRQs (`__disable_irq()`) for the duration of the frame so SysTick can't perturb the bit timing — about 360 µs for the full 12-LED ring. The main loop tolerates this because the USART1 RX hardware buffers one byte and the IRQ runs the moment we re-enable.
+
+**Critical driver — Firestore reconciler (`wifi/src/main.cpp`).** A single `GET` on boot primes a local `cached_ids` array with whatever is already in the `scanner` collection. From then on, on each frame from the STM32, `firestore_full_replace` does:
+
+1. Diff the current tag set against `cached_ids`; for each cached ID not in the current set, issue `DELETE` and compact the cache in place.
+2. For each current tag not in the cache, issue `PATCH` on its doc ID with `{"fields": {"id": {"stringValue": "<epc>"}}}` (PATCH upserts) and append it to the cache on success.
+3. The PATCH phase is wrapped in `digitalWrite(PIN_READY, LOW) … HIGH`, so the STM32 sees back-pressure and shows "Updating Cloud" on the LCD only when there is real work to do (no LOW window if the diff is empty).
 
 No service-account auth is needed because the demo collection is open read/write; the iOS app reads the same collection.
 
@@ -307,26 +323,28 @@ No service-account auth is needed because the demo collection is open read/write
 
 The clip walks through the STM32 + ESP32 + Firestore stack end-to-end:
 
-1. Power on → ST-Link VCOM boots; STM32 prints `=== Whear STM32 RFID Scanner ===` and `Waiting for ESP32 READY...`.
-2. ESP32 joins Wi-Fi, drives READY high → STM32 runs `set_region` + `set_tx_power`, then `Starting multi-inventory...`.
-3. Tagged garments in the antenna field → `[NEW] EPC: … RSSI: … dBm` on the debug UART.
-4. Every 5 s: `[poll] ok=N to=N err=N` counters, then `[UART] sending N tags` → ESP32 logs `[uart] received N tags` and one `[firestore] PATCH <epc> → 200` per tag.
-5. Remove a garment → after the 10 s TTL, STM32 logs `[stale] EPC: …` → ESP32 logs `[firestore] DELETE <epc> → 200` → iOS app removes the row.
-6. Re-add the garment → reappears on the iOS dashboard on the next 5 s cycle.
-7. Pull Wi-Fi on the ESP32 → READY drops low → STM32 keeps scanning locally, no uploads. Restore Wi-Fi → ESP32 auto-reconnects, READY goes high, Firestore re-converges on the next cycle.
+1. Power on → LCD shows "Whear / booting…", ring starts an amber spinner; ST-Link VCOM prints `=== Whear STM32 RFID Scanner ===` and `Waiting for ESP32 READY...`.
+2. ESP32 joins Wi-Fi, primes its Firestore doc-ID cache, drives READY high → STM32 runs the 10 s warm-up, then `set_region` + `set_tx_power`, then `Starting multi-inventory...`. Ring goes off, LCD updates to the live count.
+3. Tagged garments in the antenna field → `[NEW] EPC: … RSSI: … dBm` on the debug UART, green ring pulse, LCD count increments.
+4. Every 300 ms: `[poll] ok=N to=N err=N rxdrop=N` counters, then `[UART] sending N tags` → ESP32 logs `[uart] received N tags`. If the diff against the cache yields PATCHes, ESP32 drops READY → STM32 LCD shows "Updating Cloud" → ESP32 issues PATCHes → READY goes high → LCD goes back to "WiFi Connected".
+5. Remove a garment → after the 2 s TTL, STM32 prunes it (red ring pulse, `[stale] EPC: …`) → next cycle's diff issues `[firestore] DELETE <epc> → 200` → iOS app removes the row.
+6. Re-add the garment → reappears on the iOS dashboard on the next 300 ms cycle.
+7. Pull Wi-Fi on the ESP32 → READY drops low → STM32 keeps scanning locally and updating the LCD, but skips uploads. Restore Wi-Fi → ESP32 auto-reconnects, READY goes high, Firestore re-converges on the next cycle.
 
 ### SRS Validation & Data Collection
 
 **How we collected data.** Two serial consoles running simultaneously: `make monitor-main` tails the STM32 ST-Link VCOM and prints every `[NEW]`, `[stale]`, `[poll]`, and `[UART]` line; `make monitor-esp` tails the ESP32 and prints `[uart] received N tags` plus one `[firestore] PATCH/DELETE … → <HTTP code>` per document op. Cross-checked against the live Firestore console in a browser and the iOS app in parallel. End-to-end latency was stopwatch-timed from waving a tag in / out of range to the iOS row appearing / disappearing.
 
-| ID     | Requirement                                              | Achieved? | Evidence                                                                                                                                                            |
-| ------ | -------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SRS-01 | New EPC into presence table within 100 ms                | Yes       | `[NEW]` prints on the debug UART within one poll cycle of the YRM100 notice; the poll loop has no blocking calls other than a short-timeout `uart_recv_byte`.       |
-| SRS-02 | De-duplicate EPCs, track ≥ 20 concurrent tags            | Yes       | `find_or_add_tag` indexes into `seen_tags[MAX_TAGS=20]` and only prints `[NEW]` on first sighting; re-waving the same tag does not re-print.                        |
-| SRS-03 | Drop tags not re-seen within 10 s                        | Yes       | `prune_stale_tags` logs `[stale] EPC: …` ~10 s after a garment leaves the field; stopwatch-verified.                                                                |
-| SRS-04 | Frame the set to ESP32 every 5 s                         | Yes       | `[UART] sending N tags` cadence matches `SCAN_INTERVAL_MS`; ESP32 logs `[uart] received N tags` on each frame.                                                      |
-| SRS-05 | ESP32 associates with Wi-Fi on boot, auto-reconnects     | Yes       | Unplugging the AP drops READY low within one loop iteration; on restore, ESP32 prints `WiFi reconnected` and drives READY high again.                               |
-| SRS-06 | Firestore reconciliation (PATCH present, DELETE stale)   | Yes       | `[firestore] PATCH … → 200` per present tag and `DELETE … → 200` per stale tag; Firestore console tracks the physical rack.                                         |
+| ID     | Requirement                                                  | Achieved? | Evidence                                                                                                                                                            |
+| ------ | ------------------------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SRS-01 | New EPC into presence table within 100 ms                    | Yes       | `[NEW]` prints on the debug UART within one poll cycle of the YRM100 notice; USART1 RX is now IRQ-driven into a 1024-byte ring, so polls never wait on the wire.    |
+| SRS-02 | De-duplicate EPCs, track ≥ 20 concurrent tags                | Yes       | `find_or_add_tag` indexes into `seen_tags[MAX_TAGS=20]` and only prints `[NEW]` on first sighting; re-waving the same tag does not re-print.                        |
+| SRS-03 | Drop tags not re-seen within 2 s                             | Yes       | `prune_stale_tags` logs `[stale] EPC: …` ~2 s after a garment leaves the field; stopwatch-verified, red ring pulse on each eviction.                                |
+| SRS-04 | Frame the set to ESP32 every 300 ms                          | Yes       | `[UART] sending N tags` cadence matches `UPLINK_INTERVAL_MS`; ESP32 logs `[uart] received N tags` on each frame; sends are gated on `esp_ready()` for back-pressure. |
+| SRS-05 | ESP32 drives READY (idle = high, low during PATCH batches)   | Yes       | LCD flickers to "Updating Cloud" only when there is real Firestore work; READY also drops low for the full Wi-Fi reconnect window.                                  |
+| SRS-06 | Firestore reconciliation against a local cache               | Yes       | `[firestore] cached=… current=… patches=…` on each frame; only the diff is uploaded, no GET-per-cycle, console matches the physical rack.                           |
+| SRS-07 | LCD shows live count + ESP status                            | Yes       | ST7735 redraws every 200 ms; verified the count tracks the rack and the status string follows the READY pin.                                                        |
+| SRS-08 | NeoPixel ring: amber spinner / green new / red stale         | Yes       | Visible during the demo clip; pulses are non-blocking (~400 ms) and don't perturb the RFID poll counters.                                                           |
 
 ### HRS Validation & Data Collection
 
@@ -339,14 +357,15 @@ The clip walks through the STM32 + ESP32 + Firestore stack end-to-end:
 | HRS-03 | 2.4 GHz 802.11 b/g/n uplink                                | Yes                           | ESP32 Feather associates with the configured SSID and pushes HTTPS to Firestore.                                                                                             |
 | HRS-04 | STM32↔ESP32 UART + GPIO ready handshake                    | Yes                           | USART6 @ 115200 on PC6/PC7 ↔ ESP32 UART2 on GPIO14/GPIO32; PA8 ← GPIO27 verified with a logic probe.                                                                         |
 | HRS-05 | Single 5 V USB per board, each board's own 3.3 V rail      | Yes                           | Nucleo runs off ST-Link USB, Feather off USB-C; both provide their own 3.3 V.                                                                                                |
-| HRS-06 | End-to-end presence change visible ≤ 10 s                  | Yes                           | 5 s scan + 10 s TTL + sub-second Firestore round-trip → worst-case visibility inside ~10 s (stopwatch-timed).                                                                |
+| HRS-06 | End-to-end presence change visible ≤ 10 s                  | Yes (≤ 3 s typical)           | 300 ms scan + 2 s TTL + sub-second Firestore round-trip → worst-case visibility inside ~3 s (stopwatch-timed); inside 1 s for additions.                                     |
+| HRS-07 | On-device UX without the phone (LCD + ring)                | Yes                           | ST7735 over SPI1 shows the live count + WiFi/Updating status; 12-LED NeoPixel ring on PB4 pulses on every add/evict, amber spinner during boot.                              |
 
 ###  Remaining Elements That Make The Project Whole
 
-- **Mechanical / casework.** The 3D-printed closet-rail enclosure is printed and the boards fit inside, but the antenna mounts externally with tape for now — we want a snap-in SMA mount and proper strain relief on the USB pass-throughs. Hook geometry works on a standard closet rod; a second rev would add damping so it doesn't swing on install.
+- **Mechanical / casework.** The 3D-printed closet-rail enclosure is printed and the boards fit inside, but the antenna mounts externally with tape for now — we want a snap-in SMA mount and proper strain relief on the USB pass-throughs. Hook geometry works on a standard closet rod; a second rev would add damping so it doesn't swing on install. The LCD window cutout fits the ST7735 bezel but isn't gasketed.
 - **iOS app (`carlygoogel/Whear`).** SwiftUI app reading the live Firestore `scanner` collection, showing garments as present / missing. Still TODO: per-garment user-assigned labels per EPC, a `lastSeen` timestamp field (needs the ESP32 to write it), and a "forget-me-not" view for garments that haven't appeared in a long time.
 - **Web portal.** Not built yet. Leaning toward a tiny Firebase-hosted SPA that shares the same Firestore read path as the iOS app so we don't duplicate backend logic. For the demo the Firestore console doubles as a web portal.
-- **On-device UX.** No local TFT / NeoPixel on the STM32 path yet (those were scaffolded for the nRF build). Minimum useful add is a status LED on a free STM32 GPIO blinking on each successful UART frame to the ESP32 — cheap confidence signal during demos.
+- **On-device UX.** Done — ST7735 LCD shows live count + ESP status, 12-LED NeoPixel ring pulses green on add and red on evict. Future polish: scrolling list of recently-added EPCs on the LCD, and a "low battery / RFID error" warning state on the ring.
 - **Persistence across reboots.** Firestore stores the current set; a separate `history` subcollection would let us recover "last seen" after a power cycle.
 
 ###  Riskiest Remaining Part
@@ -365,7 +384,7 @@ Secondary risks:
 - **Grow the tag table and harden the lookup.** Bump `MAX_TAGS` to 128 (plenty of RAM on the F411RE), move `seen_tags` to a small open-addressing hash keyed on EPC prefix, and add a `dropped_tags` counter so a full table logs a warning instead of silently failing.
 - **CRC on the STM32↔ESP32 frame.** Append CRC-16 before `0x55`. A bad CRC means resync on the next `0xAA` — turns "mostly works" into "provably recovers from any single-byte glitch on the UART line."
 - **Retry + backoff on the ESP32.** Short retry on 5xx / socket errors, exponential backoff on repeated 4xx so we don't hammer Firestore during an outage.
-- **Idle power.** Move the STM32 into Stop mode between scan cycles with a SysTick wake — the RFID sweep is only a few hundred ms, so most of the 5 s window can be spent asleep. Cuts idle current by ~10× for a future battery-powered revision.
+- **Idle power.** Less compelling now that the uplink window is 300 ms, but worth doing if we ever go battery-powered: gate the YRM100 between sweeps and put the STM32 in Stop mode with a SysTick wake. The LCD also accepts a sleep command for ~10× lower backlight draw.
 - **Validation coverage.** Add a `scripted_test` mode that simulates `[NEW]` / `[stale]` events on a timer so we can rerun SRS-03 / SRS-04 / SRS-06 without a physical closet in front of us.
 
 ###  Questions / Help Needed From The Teaching Team
@@ -402,12 +421,14 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 
 | ID     | Description                                                                 | Validation Outcome                                                                                                                 |
 | ------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| SRS-01 | YRM100 multi-inventory, new EPC into presence table within 100 ms.          | Confirmed; `yrm100_poll_inventory` runs in the main loop and `[NEW]` lines print on the debug UART as soon as the notice arrives. |
+| SRS-01 | YRM100 multi-inventory, new EPC into presence table within 100 ms.          | Confirmed; `yrm100_poll_inventory` runs in the main loop. RX is IRQ-driven (`USART1_IRQHandler` → 1024-byte ring), so the poll never waits on the wire — `[NEW]` prints within one ISR cycle of the notice. |
 | SRS-02 | De-duplicate EPCs and track ≥20 concurrent tags.                            | Confirmed; `find_or_add_tag` indexes into `seen_tags[MAX_TAGS=20]` and refreshes `tag_last_seen` on re-sightings.                  |
-| SRS-03 | Drop tags not re-seen within 10 s.                                          | Confirmed; `prune_stale_tags` runs every send cycle and logs `[stale]` for each removed EPC.                                      |
-| SRS-04 | Frame current set to ESP32 every 5 s with `0xAA \| count \| {len,EPC}×N \| 0x55`. | Confirmed; `esp_send_tags` over USART6 at 115200; ESP32 logs `[uart] received N tags`.                                             |
-| SRS-05 | ESP32 associates with Wi-Fi on boot, drives READY high, auto-reconnects.    | Confirmed; `PIN_READY` (GPIO27) goes HIGH after `WL_CONNECTED`; loop calls `WiFi.reconnect()` and holds READY low while down.      |
-| SRS-06 | Firestore reconciliation on each frame (PATCH present, DELETE stale).       | Confirmed; `firestore_full_replace` GETs the collection, DELETEs missing doc IDs, PATCHes current ones; iOS reflects the changes. |
+| SRS-03 | Drop tags not re-seen within `TAG_TTL_MS` (2 s).                            | Confirmed; `prune_stale_tags` runs every 200 ms and logs `[stale]` (red ring pulse) for each removed EPC.                          |
+| SRS-04 | Frame current set to ESP32 every 300 ms with `0xAA \| count \| {len,EPC}×N \| 0x55`. | Confirmed; `esp_send_tags` over USART6 at 115200, gated on `esp_ready()`; ESP32 logs `[uart] received N tags`.                |
+| SRS-05 | ESP32 drives READY (idle = HIGH, LOW during PATCH batches).                 | Confirmed; `PIN_READY` (GPIO27) goes HIGH after `WL_CONNECTED`, drops LOW only around the PATCH phase of `firestore_full_replace`.  |
+| SRS-06 | Firestore reconciliation on each frame against a primed cache.              | Confirmed; one boot-time `GET` primes `cached_ids`; per-frame diff issues only DELETE / PATCH for actual changes. iOS reflects.    |
+| SRS-07 | LCD live count + ESP status @ 200 ms.                                       | Confirmed; ST7735 over SPI1 — `display_update` redraws title, status row, and big count digits each cadence.                       |
+| SRS-08 | NeoPixel ring states (amber spinner / green new / red stale).               | Confirmed; `ring_spinner_tick` during ESP wait + warm-up, non-blocking `ring_pulse_start` on add and on evict.                     |
 
 #### 3.2 Hardware Requirements Specification (HRS) Results
 
@@ -416,13 +437,14 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 | HRS-01 | UHF RFID read range ≥1.5 m through fabric with ≥5 dBi antenna. | Confirmed in lab; laundry tags on hanging garments detected well past 1.5 m with the 6 dBi patch antenna.          |
 | HRS-02 | Reader configured for US region at ≥23 dBm.                    | Confirmed; `yrm100_set_region(YRM100_REGION_US)` + `yrm100_set_tx_power(YRM100_POWER_2600)` (26 dBm) at boot.      |
 | HRS-03 | 2.4 GHz Wi-Fi b/g/n uplink.                                    | Confirmed; ESP32 associates with the configured SSID and pushes HTTPS to Firestore.                                |
-| HRS-04 | STM32 ↔ ESP32 UART at 115200 with GPIO ready handshake.        | Confirmed; USART6 on PC6/PC7 ↔ ESP32 UART2 on GPIO14/GPIO32, plus PA8 ← GPIO27 READY pin.                         |
-| HRS-05 | Single 5 V USB supply per board; each board's own 3.3 V rail.  | Confirmed; Nucleo runs off ST-Link USB, Feather runs off USB-C, both provide their own 3.3 V.                      |
-| HRS-06 | End-to-end presence change visible within 10 s.                | Confirmed; 5 s scan interval + 10 s TTL + sub-second Firestore round-trip put worst-case visibility inside ~10 s. |
+| HRS-04 | STM32 ↔ ESP32 UART at 115200 with GPIO ready handshake.        | Confirmed; USART6 on PC6/PC7 ↔ ESP32 UART2 on GPIO14/GPIO32, plus PA8 ← GPIO27 READY pin (also used as PATCH-busy back-pressure).  |
+| HRS-05 | Single 5 V USB supply per board; each board's own 3.3 V rail.  | Confirmed; Nucleo runs off ST-Link USB, Feather runs off USB-C, both provide their own 3.3 V.                                      |
+| HRS-06 | End-to-end presence change visible within 10 s.                | Exceeded; 300 ms uplink + 2 s TTL + sub-second Firestore round-trip put worst-case visibility inside ~3 s, additions inside ~1 s.  |
+| HRS-07 | On-device UX (LCD + status ring).                              | Confirmed; ST7735 1.8" TFT on SPI1 (PA5/PA7/PB5/PB6/PB15) shows live count + ESP status; 12-LED NeoPixel ring on PB4 pulses.       |
 
 ### 4. Conclusion
 
-Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and surfaced in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration) and the STM32 bare-metal runtime around it — clock init, three USARTs, SysTick-based timing, and the deterministic framer on the ESP32 link. The biggest lesson was one of platform risk: the nRF5340 + nRF7002 path we developed through Sprint #2 was architecturally nicer (dual-core IPC, direct WebSocket uplink) but was not stable enough in the demo window, and rebuilding on the STM32 + ESP32 layout — which we knew cold from prior labs — was the right call even though it meant re-writing the firmware at the last moment.
+Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, surfaced locally on an ST7735 LCD and a 12-LED NeoPixel status ring, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and mirrored in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration), the IRQ-driven UART RX path that finally killed the back-to-back inventory desync we hit in Sprint #2, the bit-banged WS2812 driver on PB4, and the bare-register ST7735 / SPI1 driver — all on top of a from-scratch STM32 runtime (clock init, three USARTs, SysTick, deterministic framer to the ESP32). On the cloud side, the biggest single win was switching from a GET-every-cycle Firestore reconciler to a primed-cache diff: that's what made the 300 ms uplink cadence feasible and gave us the sub-3-second end-to-end latency in HRS-06. The biggest lesson was one of platform risk: the nRF5340 + nRF7002 path we developed through Sprint #2 was architecturally nicer (dual-core IPC, direct WebSocket uplink) but was not stable enough in the demo window, and rebuilding on the STM32 + ESP32 layout — which we knew cold from prior labs — was the right call even though it meant re-writing the firmware at the last moment.
 
 ## References
 
@@ -435,10 +457,12 @@ Whear shipped as a working closet-inventory system: laundry-tagged garments are 
 
 **STM32F411RE pin map**
 
-- USART1 — YRM100 reader: PA9 (TX), PA10 (RX)
+- USART1 — YRM100 reader: PA9 (TX), PA10 (RX) — IRQ-driven RX into a 1024-byte ring
 - USART2 — ST-Link VCOM debug: PA2 (TX), PA3 (RX)
 - USART6 — ESP32 bridge: PC6 (TX), PC7 (RX)
-- PA8 — READY input from ESP32 (pulled down; ESP32 drives high when Wi-Fi is up)
+- SPI1 — ST7735 1.8" TFT: PA5 (SCK), PA7 (MOSI), PB6 (DC), PB15 (RST), PB5 (CS)
+- PB4 — NeoPixel ring DIN (12 LEDs, bit-banged 800 kHz one-wire)
+- PA8 — READY input from ESP32 (pulled down; HIGH = ESP idle on Wi-Fi, LOW = ESP mid-PATCH or pre-Wi-Fi)
 
 **ESP32 Feather HUZZAH32 V2 pin map**
 
