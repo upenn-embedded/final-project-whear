@@ -146,8 +146,8 @@ Onshape CAD: https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f
 
 ### 8. Final Demo Goals
 
-- Live closet demo: tagged garments placed on / removed from a rack, with the iOS dashboard updating in real time off Firestore.
-- At least 10 distinct tags tracked simultaneously with correct presence → absence transitions within 10 s.
+-t Live closet demo: tagged garments placed on / removed from a rack, with the iOS dashboard updating in real time off Firestore.
+- At least 10 distinct tags tracked simulaneously with correct presence → absence transitions within 10 s.
 - Pull the Wi-Fi / unplug the ESP32 and show the STM32 keep scanning locally; reconnect and show Firestore re-converge.
 - The enclosure hangs on an actual closet rail with the antenna oriented down the rod.
 
@@ -410,12 +410,23 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 
 ### 1. Video
 
+Final video link: 
+
+Final presentation video: 
 
 
 ### 2. Images
 
+![Project image 1](images/IMG_6097.jpg)
+
+![Project image 2](images/IMG_6098.jpg)
+
+![Project image 3](images/IMG_6099.jpg)
+
 
 ### 3. Results
+
+Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, surfaced locally on an ST7735 LCD and a 12-LED NeoPixel status ring, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and mirrored in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration), the IRQ-driven UART RX path that finally killed the back-to-back inventory desync we hit in Sprint #2, the bit-banged WS2812 driver on PB4, and the bare-register ST7735 / SPI1 driver — all on top of a from-scratch STM32 runtime (clock init, three USARTs, SysTick, deterministic framer to the ESP32). On the cloud side, the biggest single win was switching from a GET-every-cycle Firestore reconciler to a primed-cache diff: that's what made the 300 ms uplink cadence feasible and gave us the sub-3-second end-to-end latency in HRS-06. 
 
 #### 3.1 Software Requirements Specification (SRS) Results
 
@@ -444,7 +455,31 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 
 ### 4. Conclusion
 
-Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, surfaced locally on an ST7735 LCD and a 12-LED NeoPixel status ring, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and mirrored in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration), the IRQ-driven UART RX path that finally killed the back-to-back inventory desync we hit in Sprint #2, the bit-banged WS2812 driver on PB4, and the bare-register ST7735 / SPI1 driver — all on top of a from-scratch STM32 runtime (clock init, three USARTs, SysTick, deterministic framer to the ESP32). On the cloud side, the biggest single win was switching from a GET-every-cycle Firestore reconciler to a primed-cache diff: that's what made the 300 ms uplink cadence feasible and gave us the sub-3-second end-to-end latency in HRS-06. The biggest lesson was one of platform risk: the nRF5340 + nRF7002 path we developed through Sprint #2 was architecturally nicer (dual-core IPC, direct WebSocket uplink) but was not stable enough in the demo window, and rebuilding on the STM32 + ESP32 layout — which we knew cold from prior labs — was the right call even though it meant re-writing the firmware at the last moment.
+Conclusion
+Reflect on your project. Some questions to address:
+What did you learn from it?
+What went well?
+What accomplishments are you proud of?
+What did you learn/gain from this experience?
+Did you have to change your approach?
+What could have been done differently?
+Did you encounter obstacles that you didn’t anticipate?
+What could be the next step for this project?
+
+Carly:
+
+Dimitris: Our device, Whear, has been completed successfully. We were able to deliver a working prototype of a closet-inventory system that hit all of our goals: detecting multiple RFID tags on laundry-tagged garments and updating the inventory accordingly. What went really well, in my opinion, is that we delivered a clean build with reliable hardware that could realistically be implemented in someone’s wardrobe. 
+
+Throughout this project I developed my hardware/software integration skills by learning how to write a driver from scratch, implement different communication protocols (UART, SPI, and the bit-banged WS2812 one-wire protocol), integrate with an iOS app, and establish Wifi connectivity. Something I got out of this this project is adaptability. We came in with a proposal for a device that would keep track of items in collections for collection enthusiasts, but we realized that the current idea would be more applicable and better, so we switched midway. As also shown up until Sprint Review 2, our hardware approach changed significantly throughout the project. We began working with the nRF5340 + nRF7002 because it made more sense architecturally, especially with dual-core IPC and a direct WebSocket uplink. 
+
+However, it was not stable enough during the demo window, so we rebuilt the system using the STM32 + ESP32 layout, which we knew well from prior labs. Even though this meant rewriting the firmware at the last moment, it was the right call and taught us an important lesson about platform risk and adaptability. That being said, our switch up to the STM over any other platform was definitely strategical since the drivers we had written would require the least amount of change over any other microcontroller that would be able to hit our. One keytakaway for myself is to not get discouraged if things go south with some initial option and more importantly not get too attached with some approach simply because its the one that sounds most reasonable in theory. 
+
+I am particularly proud of the enclosure and the overall polish of the final design; I feel we went through every step of building a real working prototype. Plenty of things could still be improved or optimized — hardware security, a larger LCD with touch input, and on-device persistence all come to mind.
+
+What I would have done differently is focus on prioritizing tasks better based on how critical they were for the device. For example, I fell behind schedule because I spent too much time trying to make an LCD work, even though the Wi-Fi connection and the enclosure had not been completed yet.
+
+Next steps for this project would be making it more commercializable. The first step would be a custom PCB that integrates the microcontroller and Wi-Fi capabilities on a single board, plus a proper power-distribution stage so the device runs from a single supply instead of two USB cables. After that, redesigning the enclosure for production is a must and that should at least include: sized to the new PCB, with a cleaner antenna mount and finished surfaces.
+
 
 ## References
 
