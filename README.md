@@ -16,7 +16,7 @@
 
 **iOS App Repository:** https://github.com/carlygoogel/Whear
 
-**GitHub Pages Website URL:** [for final submission]\*
+**GitHub Pages Website URL:** https://upenn-embedded.github.io/final-project-whear/
 
 ## Final Project Proposal
 
@@ -475,6 +475,18 @@ If we had more time, the thing I would change is the balance between firmware an
 Next steps follow from that pretty directly. I would want to optimize the firmware so the device can do useful inventory work standalone, build out the iOS app to something closer to production quality with per-garment labels and a real "haven't worn this in a while" view, and redesign the enclosure for actual real-world closet use, with a cleaner antenna mount and a single-supply power input instead of two USB cables. The bones of a shippable product are here; it is mostly a question of pushing each layer past "demo quality."
 
 **Carly:**
+
+As a systems engineer who had not taken many of the typical prerequisites for this course, this project pushed me to learn quickly and deeply. I developed a strong understanding of how low-level operations, like bitwise logic with ones and zeros using |=, &=, and ~, directly control timers, clocks, and interrupts at the bare-metal level. This shifted my perspective from abstract code to truly understanding how software interfaces with hardware.
+
+What went well was my ability to adapt and build intuition despite initial gaps in background. I am especially proud of getting a working system that integrates both hardware and software components, and of becoming more comfortable debugging at a low level.
+
+This experience reinforced how important it is to reason from first principles in embedded systems. I also learned that progress often required changing my approach, moving from trial-and-error to more structured debugging and referencing documentation more deliberately.
+
+One challenge I did not fully anticipate was how time-consuming low-level debugging can be, especially when small mistakes in register configuration cause unexpected behavior. In retrospect, I could have been more systematic earlier on and invested more time upfront in planning and understanding the architecture before implementing.
+
+A natural next step for this project would be to build more abstraction layers on top of the current system, making it easier to extend functionality while still preserving the efficiency of the low-level implementation.
+
+Overall, I am grateful to Professor McGill-Gardner for being an incredible teacher and for guiding me through this learning process.
 
 **Dimitris:**
 
