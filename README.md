@@ -412,7 +412,7 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 
 Final video link: 
 
-Final presentation video: 
+Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing
 
 
 ### 2. Images
