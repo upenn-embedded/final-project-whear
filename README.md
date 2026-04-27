@@ -19,58 +19,17 @@
 ### 1. Video
 
 <style>
-.whear-video {
-  position: relative;
-  padding-bottom: 56.25%;
-  height: 0;
-  overflow: hidden;
-  max-width: 800px;
-  margin: 1em auto;
-  border-radius: 12px;
-  box-shadow: 0 6px 24px rgba(0,0,0,.2);
-  background: #000;
-  cursor: pointer;
-}
-.whear-video img {
-  position: absolute; top: 0; left: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  transition: transform .3s ease, opacity .3s ease;
-}
-.whear-video:hover img { transform: scale(1.03); opacity: .85; }
-.whear-video .play {
-  position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  width: 96px; height: 96px;
-  border-radius: 50%;
-  background: rgba(0,0,0,.65);
-  border: 3px solid #fff;
-  display: flex; align-items: center; justify-content: center;
-  transition: background .25s ease, transform .25s ease;
-}
-.whear-video:hover .play { background: #e63946; transform: translate(-50%, -50%) scale(1.08); }
-.whear-video .play::after {
-  content: "";
-  border-style: solid;
-  border-width: 16px 0 16px 26px;
-  border-color: transparent transparent transparent #fff;
-  margin-left: 6px;
-}
+.whear-video { display:block; position:relative; padding-bottom:56.25%; height:0; max-width:800px; margin:1.5em auto; border-radius:12px; overflow:hidden; box-shadow:0 6px 24px rgba(0,0,0,.2); background:#000; }
+.whear-video img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transition:transform .3s ease, opacity .3s ease; }
+.whear-video:hover img { transform:scale(1.03); opacity:.85; }
+.whear-video::after { content:""; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:96px; height:96px; border-radius:50%; background:rgba(0,0,0,.65); border:3px solid #fff; transition:background .25s ease, transform .25s ease; }
+.whear-video::before { content:""; position:absolute; top:50%; left:50%; transform:translate(-40%,-50%); border-style:solid; border-width:16px 0 16px 26px; border-color:transparent transparent transparent #fff; z-index:2; }
+.whear-video:hover::after { background:#e63946; transform:translate(-50%,-50%) scale(1.08); }
 </style>
 
-<div class="whear-video" id="whear-video">
+<a class="whear-video" href="https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view" target="_blank" rel="noopener">
   <img src="images/IMG_6097.jpg" alt="Whear demo video">
-  <div class="play"></div>
-</div>
-
-<script>
-document.getElementById('whear-video').addEventListener('click', function() {
-  this.innerHTML = '<iframe src="https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/preview?autoplay=1" style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;" allow="autoplay" allowfullscreen></iframe>';
-  this.style.cursor = 'default';
-});
-</script>
-
-[Open in Google Drive](https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing)
+</a>
 
 ### 2. Images
 
@@ -90,7 +49,7 @@ Whear shipped as a working closet-inventory system: laundry-tagged garments are 
 
 ## System Block Diagram
 
-<div class="mermaid">
+<div class="mermaid" style="text-align:center;">
 flowchart TD
     tags["RFID tags<br/>96-bit EPC"]
     antenna["UHF patch antenna<br/>5–6 dBi, SMA"]
