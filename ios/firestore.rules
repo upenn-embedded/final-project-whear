@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Anyone authenticated (anonymous or otherwise) can read/write items and scanner
+    match /items/{docId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /scanner/{docId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
