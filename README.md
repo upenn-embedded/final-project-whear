@@ -45,7 +45,7 @@
 
 ### Enclosure CAD (interactive)
 
-<iframe src="https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f38ca1e84162dad2f7c/e/438206de66ef1abd3ba63d5b?renderMode=0&uiState=69efeeece6bfc4958c011779"
+<iframe src="https://www.viewstl.com/?embedded&bgcolor=white&color=darkblue&url=https://upenn-embedded.github.io/final-project-whear/cad/enclosure.stl"
         style="display:block;width:100%;max-width:1000px;height:600px;margin:1.5em auto;border:0;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.2);"
         allowfullscreen></iframe>
 
