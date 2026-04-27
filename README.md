@@ -14,67 +14,17 @@
 
 **iOS App Repository:** https://github.com/carlygoogel/Whear
 
-## System Block Diagram
 
-```
- ┌─────────────────┐           ┌──────────────────────────────────────────┐
- │ RFID tags on    │  UHF      │ UHF patch antenna (5–6 dBi, SMA)         │
- │ each garment    │◄────────►│                                          │
- │ (96-bit EPC)    │           └────────────────┬─────────────────────────┘
- └─────────────────┘                            │
-                                                ▼
-                                  ┌──────────────────────┐
-                                  │ YRM100 RFID reader   │
-                                  │ (Impinj R2000)       │
-                                  └──────────┬───────────┘
-                                             │ UART1 @ 115200
-                                             │ PA9 TX / PA10 RX
-                                             ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ STM32F411RE (Nucleo-64, bare-metal C)                               │
- │                                                                     │
- │  • YRM100 driver (frame parser, multi-inventory poll)               │
- │  • IRQ-driven USART1 RX into a 1024-byte ring (USART1_IRQHandler)   │
- │  • Tag table: add-on-new, refresh-on-seen, prune after TTL (2 s)    │
- │  • ST7735 1.8" TFT over SPI1 — live count + ESP status              │
- │  • 12-LED NeoPixel ring on PB4 — amber spinner / green / red pulse  │
- │  • Debug console → ST-Link VCOM (USART2, PA2/PA3)                   │
- │  • UART frame to ESP32 every UPLINK_INTERVAL (USART6, PC6/PC7)      │
- │  • READY-pin back-pressure on PA8 (low while ESP is uploading)      │
- └─────────────────────────────────────────┬───────────────────────────┘
-                                           │ UART6 @ 115200
-                                           │ [0xAA | count | {len,EPC}xN | 0x55]
-                                           ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ ESP32 Feather HUZZAH32 V2 (Arduino framework)                       │
- │                                                                     │
- │  • UART2 frame reader (GPIO14 RX / GPIO32 TX)                       │
- │  • WiFi.begin → drives READY pin (GPIO27) high when associated      │
- │  • Cached doc-ID list (primed once via GET) → diff against frame    │
- │  • Firestore REST: DELETE stale, PATCH new only; READY low on PATCH │
- └─────────────────────────────────────────┬───────────────────────────┘
-                                           │ HTTPS
-                                           ▼
-                             ┌─────────────────────────────┐
-                             │ Google Firestore            │
-                             │  project:    whear-fb2ac    │
-                             │  collection: scanner        │
-                             └──────────────┬──────────────┘
-                                            │
-                                            ▼
-                             ┌─────────────────────────────┐
-                             │ iOS app (SwiftUI)           │
-                             │ → live presence dashboard   │
-                             └─────────────────────────────┘
-```
-
-## Final Report
-
-Don't forget to make the GitHub pages public website! If you've never made a GitHub pages website before, you can follow this webpage (though, substitute your final project repository for the GitHub username one in the quickstart guide): [https://docs.github.com/en/pages/quickstart](https://docs.github.com/en/pages/quickstart)
 
 ### 1. Video
 
-Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing
+<div style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;max-width:800px;margin:1em auto;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.15);">
+  <iframe src="https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/preview"
+          style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;"
+          allow="autoplay" allowfullscreen></iframe>
+</div>
+
+[Open in Google Drive](https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing)
 
 ### 2. Images
 
@@ -92,7 +42,42 @@ Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9Ou
 
 Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, surfaced locally on an ST7735 LCD and a 12-LED NeoPixel status ring, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and mirrored in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration), the IRQ-driven UART RX path that finally killed the back-to-back inventory desync we hit in Sprint #2, the bit-banged WS2812 driver on PB4, and the bare-register ST7735 / SPI1 driver — all on top of a from-scratch STM32 runtime (clock init, three USARTs, SysTick, deterministic framer to the ESP32). On the cloud side, the biggest single win was switching from a GET-every-cycle Firestore reconciler to a primed-cache diff: that's what made the 300 ms uplink cadence feasible and gave us the sub-3-second end-to-end latency in HRS-06.
 
-#### 3.1 Software Requirements Specification (SRS) Results
+## System Block Diagram
+
+<div class="mermaid">
+flowchart TD
+    tags["RFID tags<br/>96-bit EPC"]
+    antenna["UHF patch antenna<br/>5–6 dBi, SMA"]
+    reader["YRM100 RFID reader<br/>Impinj R2000"]
+    stm["<b>STM32F411RE</b><br/>(Nucleo-64, bare-metal C)<br/>• YRM100 driver<br/>• IRQ-driven USART1 RX<br/>• Tag table + 2 s TTL<br/>• ST7735 LCD over SPI1<br/>• 12-LED NeoPixel ring"]
+    esp["<b>ESP32 Feather HUZZAH32 V2</b><br/>(Arduino framework)<br/>• UART2 frame reader<br/>• Cached doc-ID list<br/>• Firestore PATCH / DELETE"]
+    fs[("Google Firestore<br/>project: whear-fb2ac<br/>collection: scanner")]
+    ios["iOS app (SwiftUI)<br/>live presence dashboard"]
+
+    tags <-->|UHF| antenna
+    antenna --> reader
+    reader -->|"UART1 @ 115200<br/>PA9 / PA10"| stm
+    stm -->|"UART6 @ 115200<br/>0xAA · count · tags · 0x55"| esp
+    esp -->|HTTPS| fs
+    fs --> ios
+
+    classDef hw    fill:#e8f4f8,stroke:#1a5f7a,stroke-width:2px,color:#000;
+    classDef mcu   fill:#fef3c7,stroke:#92400e,stroke-width:2px,color:#000;
+    classDef cloud fill:#fce7f3,stroke:#9d174d,stroke-width:2px,color:#000;
+    classDef app   fill:#dcfce7,stroke:#166534,stroke-width:2px,color:#000;
+
+    class tags,antenna,reader hw;
+    class stm,esp mcu;
+    class fs cloud;
+    class ios app;
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true, theme:'default', securityLevel:'loose'});</script>
+
+
+
+#### Software Requirements Specification (SRS) Results
 
 | ID     | Description                                                                          | Validation Outcome                                                                                                                                                                                          |
 | ------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -105,7 +90,7 @@ Whear shipped as a working closet-inventory system: laundry-tagged garments are 
 | SRS-07 | LCD live count + ESP status @ 200 ms.                                                | Confirmed; ST7735 over SPI1 — `display_update` redraws title, status row, and big count digits each cadence.                                                                                                |
 | SRS-08 | NeoPixel ring states (amber spinner / green new / red stale).                        | Confirmed; `ring_spinner_tick` during ESP wait + warm-up, non-blocking `ring_pulse_start` on add and on evict.                                                                                              |
 
-#### 3.2 Hardware Requirements Specification (HRS) Results
+####  Hardware Requirements Specification (HRS) Results
 
 | ID     | Description                                                    | Validation Outcome                                                                                                                 |
 | ------ | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -117,18 +102,9 @@ Whear shipped as a working closet-inventory system: laundry-tagged garments are 
 | HRS-06 | End-to-end presence change visible within 10 s.                | Exceeded; 300 ms uplink + 2 s TTL + sub-second Firestore round-trip put worst-case visibility inside ~3 s, additions inside ~1 s.  |
 | HRS-07 | On-device UX (LCD + status ring).                              | Confirmed; ST7735 1.8" TFT on SPI1 (PA5/PA7/PB5/PB6/PB15) shows live count + ESP status; 12-LED NeoPixel ring on PB4 pulses.       |
 
-### 4. Conclusion
+### Conclusion
 
-Conclusion
-Reflect on your project. Some questions to address:
-What did you learn from it?
-What went well?
-What accomplishments are you proud of?
-What did you learn/gain from this experience?
-Did you have to change your approach?
-What could have been done differently?
-Did you encounter obstacles that you didn’t anticipate?
-What could be the next step for this project?
+
 
 **Jefferson: **
 
