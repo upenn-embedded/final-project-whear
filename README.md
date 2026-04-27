@@ -1,10 +1,78 @@
+# Whear
+
+**Team Number:** 4
+
+**Team Name:** Whear
+
+| Team Member Name    | Email Address           |
+| ------------------- | ----------------------- |
+| jefferson ding      | tyding@seas.upenn.edu   |
+| dimitris deliakidis | ddelias@seas.upenn.edu  |
+| carly googel        | cagoogel@seas.upenn.edu |
+
+**GitHub Repository URL:** https://github.com/upenn-embedded/final-project-whear
+
+**iOS App Repository:** https://github.com/carlygoogel/Whear
+
+## System Block Diagram
+
+```
+ ┌─────────────────┐           ┌──────────────────────────────────────────┐
+ │ RFID tags on    │  UHF      │ UHF patch antenna (5–6 dBi, SMA)         │
+ │ each garment    │◄────────►│                                          │
+ │ (96-bit EPC)    │           └────────────────┬─────────────────────────┘
+ └─────────────────┘                            │
+                                                ▼
+                                  ┌──────────────────────┐
+                                  │ YRM100 RFID reader   │
+                                  │ (Impinj R2000)       │
+                                  └──────────┬───────────┘
+                                             │ UART1 @ 115200
+                                             │ PA9 TX / PA10 RX
+                                             ▼
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │ STM32F411RE (Nucleo-64, bare-metal C)                               │
+ │                                                                     │
+ │  • YRM100 driver (frame parser, multi-inventory poll)               │
+ │  • IRQ-driven USART1 RX into a 1024-byte ring (USART1_IRQHandler)   │
+ │  • Tag table: add-on-new, refresh-on-seen, prune after TTL (2 s)    │
+ │  • ST7735 1.8" TFT over SPI1 — live count + ESP status              │
+ │  • 12-LED NeoPixel ring on PB4 — amber spinner / green / red pulse  │
+ │  • Debug console → ST-Link VCOM (USART2, PA2/PA3)                   │
+ │  • UART frame to ESP32 every UPLINK_INTERVAL (USART6, PC6/PC7)      │
+ │  • READY-pin back-pressure on PA8 (low while ESP is uploading)      │
+ └─────────────────────────────────────────┬───────────────────────────┘
+                                           │ UART6 @ 115200
+                                           │ [0xAA | count | {len,EPC}xN | 0x55]
+                                           ▼
+ ┌─────────────────────────────────────────────────────────────────────┐
+ │ ESP32 Feather HUZZAH32 V2 (Arduino framework)                       │
+ │                                                                     │
+ │  • UART2 frame reader (GPIO14 RX / GPIO32 TX)                       │
+ │  • WiFi.begin → drives READY pin (GPIO27) high when associated      │
+ │  • Cached doc-ID list (primed once via GET) → diff against frame    │
+ │  • Firestore REST: DELETE stale, PATCH new only; READY low on PATCH │
+ └─────────────────────────────────────────┬───────────────────────────┘
+                                           │ HTTPS
+                                           ▼
+                             ┌─────────────────────────────┐
+                             │ Google Firestore            │
+                             │  project:    whear-fb2ac    │
+                             │  collection: scanner        │
+                             └──────────────┬──────────────┘
+                                            │
+                                            ▼
+                             ┌─────────────────────────────┐
+                             │ iOS app (SwiftUI)           │
+                             │ → live presence dashboard   │
+                             └─────────────────────────────┘
+```
+
 ## Final Report
 
 Don't forget to make the GitHub pages public website! If you've never made a GitHub pages website before, you can follow this webpage (though, substitute your final project repository for the GitHub username one in the quickstart guide): [https://docs.github.com/en/pages/quickstart](https://docs.github.com/en/pages/quickstart)
 
 ### 1. Video
-
-Final video link: 
 
 Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing
 
