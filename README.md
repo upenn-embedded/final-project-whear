@@ -43,6 +43,14 @@
 
 <img src="https://github.com/user-attachments/assets/9a1bd37d-9c3f-4637-b351-45afd8bee25d" width="500"/>
 
+### Enclosure CAD (interactive)
+
+<iframe src="https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f38ca1e84162dad2f7c/e/438206de66ef1abd3ba63d5b?renderMode=0&uiState=69efeeece6bfc4958c011779"
+        style="display:block;width:100%;max-width:1000px;height:600px;margin:1.5em auto;border:0;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.2);"
+        allowfullscreen></iframe>
+
+[Open in Onshape](https://cad.onshape.com/documents/d4b02aa7ef074eb8d4de5ae9/w/d47a6f38ca1e84162dad2f7c/e/438206de66ef1abd3ba63d5b)
+
 ### 3. Results
 
 Whear shipped as a working closet-inventory system: laundry-tagged garments are seen by a YRM100 over a 6 dBi patch antenna, tracked in a TTL-based presence table on a bare-metal STM32F411RE, surfaced locally on an ST7735 LCD and a 12-LED NeoPixel status ring, framed over UART to an ESP32 Feather that reconciles the set against Firestore, and mirrored in a SwiftUI iOS app. The core embedded contribution was the hand-written YRM100 driver (frame parser, multi-inventory state machine, region / power configuration), the IRQ-driven UART RX path that finally killed the back-to-back inventory desync we hit in Sprint #2, the bit-banged WS2812 driver on PB4, and the bare-register ST7735 / SPI1 driver — all on top of a from-scratch STM32 runtime (clock init, three USARTs, SysTick, deterministic framer to the ESP32). On the cloud side, the biggest single win was switching from a GET-every-cycle Firestore reconciler to a primed-cache diff: that's what made the 300 ms uplink cadence feasible and gave us the sub-3-second end-to-end latency in HRS-06.
