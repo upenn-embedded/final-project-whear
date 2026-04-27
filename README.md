@@ -406,7 +406,7 @@ Don't forget to make the GitHub pages public website! If you've never made a Git
 
 ### 1. Video
 
-Final video link:
+Final video link: 
 
 Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view?usp=sharing
 
@@ -417,6 +417,10 @@ Final presentation video: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9Ou
 ![Project image 2](images/IMG_6098.jpg)
 
 ![Project image 3](images/IMG_6099.jpg)
+
+**Whear iOS App**
+
+<img src="https://github.com/user-attachments/assets/9a1bd37d-9c3f-4637-b351-45afd8bee25d" width="500"/>
 
 ### 3. Results
 
