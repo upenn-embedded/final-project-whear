@@ -135,7 +135,7 @@ Next steps follow from that pretty directly. I would want to optimize the firmwa
 
 **Carly:**
 
-As a systems engineer who had not taken many of the typical prerequisites for this course, this project pushed me to learn quickly and deeply. I developed a strong understanding of how low-level operations, like bitwise logic with ones and zeros using |=, &=, and ~, directly control timers, clocks, and interrupts at the bare-metal level. This shifted my perspective from abstract code to truly understanding how software interfaces with hardware.
+As a systems engineer who had not taken many of the typical prerequisites for this course, this project pushed me to learn quickly and deeply. I developed a strong understanding of how low-level operations, like bitwise logic with ones and zeros using "or equals", "and not equals", directly control timers, clocks, and interrupts at the bare-metal level. This shifted my perspective from abstract code to truly understanding how software interfaces with hardware.
 
 What went well was my ability to adapt and build intuition despite initial gaps in background. I am especially proud of getting a working system that integrates both hardware and software components, and of becoming more comfortable debugging at a low level.
 
