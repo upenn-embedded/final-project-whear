@@ -103,6 +103,13 @@ flowchart TD
 | SRS-07 | LCD live count + ESP status @ 200 ms.                                                | Confirmed; ST7735 over SPI1 — `display_update` redraws title, status row, and big count digits each cadence.                                                                                                |
 | SRS-08 | NeoPixel ring states (amber spinner / green new / red stale).                        | Confirmed; `ring_spinner_tick` during ESP wait + warm-up, non-blocking `ring_pulse_start` on add and on evict.                                                                                              |
 
+
+
+SRS-07: serial monitor screenshot shows how STM32 sends new tags to ESP32: ![Project image 4](images/image.png)
+SRS-08: Video demonstration: https://drive.google.com/file/d/1LMR6zpGG7_tcq9WGxoNr0-2pcL2efwNc/view?usp=sharing
+
+
+
 ####  Hardware Requirements Specification (HRS) Results
 
 | ID     | Description                                                    | Validation Outcome                                                                                                                 |
@@ -114,6 +121,12 @@ flowchart TD
 | HRS-05 | Single 5 V USB supply per board; each board's own 3.3 V rail.  | Confirmed; Nucleo runs off ST-Link USB, Feather runs off USB-C, both provide their own 3.3 V.                                      |
 | HRS-06 | End-to-end presence change visible within 10 s.                | Exceeded; 300 ms uplink + 2 s TTL + sub-second Firestore round-trip put worst-case visibility inside ~3 s, additions inside ~1 s.  |
 | HRS-07 | On-device UX (LCD + status ring).                              | Confirmed; ST7735 1.8" TFT on SPI1 (PA5/PA7/PB5/PB6/PB15) shows live count + ESP status; 12-LED NeoPixel ring on PB4 pulses.       |
+| HRS-08 | Hardware enclosure management — clean wiring inside the case.  | Confirmed; a soldered perfboard sits on the Nucleo's male headers and breaks out the UART, SPI, and GPIO lines to the YRM100, ESP32 Feather, ST7735 LCD, and NeoPixel ring. No breadboards or flying jumpers — every board can be unplugged and re-plugged without losing any connections. |
+
+
+
+
+
 
 ### Conclusion
 
