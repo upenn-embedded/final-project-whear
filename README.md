@@ -104,7 +104,7 @@ flowchart TD
 | SRS-08 | NeoPixel ring states (amber spinner / green new / red stale).                        | Confirmed; `ring_spinner_tick` during ESP wait + warm-up, non-blocking `ring_pulse_start` on add and on evict.                                                                                              |
 
 
-
+yea
 SRS-07: serial monitor screenshot shows how STM32 sends new tags to ESP32: ![Project image 4](images/image.png)
 SRS-08: Video demonstration: https://drive.google.com/file/d/1LMR6zpGG7_tcq9WGxoNr0-2pcL2efwNc/view?usp=sharing
 

@@ -1,0 +1,4 @@
+.claude/
+*.elf
+*.bin
+*.o
