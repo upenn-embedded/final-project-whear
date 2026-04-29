@@ -27,7 +27,7 @@
 .whear-video:hover::after { background:#e63946; transform:translate(-50%,-50%) scale(1.08); }
 </style>
 
-<a class="whear-video" href="https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view" target="_blank" rel="noopener">
+<a class="whear-video" href="https://drive.google.com/file/d/12_IpL80n6UDcxju1-nHyh3kO2M6vBHSw/view?usp=sharing" target="_blank" rel="noopener">
   <img src="images/IMG_6097.jpg" alt="Whear demo video">
 </a>
 
@@ -124,7 +124,7 @@ SRS-08: Video demonstration: https://drive.google.com/file/d/1LMR6zpGG7_tcq9WGxo
 | HRS-08 | Hardware enclosure management — clean wiring inside the case.  | Confirmed; a soldered perfboard sits on the Nucleo's male headers and breaks out the UART, SPI, and GPIO lines to the YRM100, ESP32 Feather, ST7735 LCD, and NeoPixel ring. No breadboards or flying jumpers — every board can be unplugged and re-plugged without losing any connections. |
 | HRS-09 | Enclosure symmetry — balanced hang on a closet rod.            | Confirmed; the 3D-printed enclosure is symmetric about the hook's centerline, with the boards and the antenna laid out so the center of mass falls under the hook. Placed on a standard closet rod the unit hangs vertical with no perceptible roll. |
 
-HRS-08 and HRS-07 are shown on demo video
+HRS-08 and HRS-07 are shown on demo video from friday: https://drive.google.com/file/d/15mCs63fypj9_3HD5aF9OuEwmoSQz9gm8/view
 
 
 
